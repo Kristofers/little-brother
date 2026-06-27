@@ -133,6 +133,10 @@ The prompt lives in [`whats_up_prompt.md`](whats_up_prompt.md) in the repo (edit
 - The result files can contain sensitive information about your machine and environment. Do not check them in, and consider where you upload them.
 - The GSA tunnel is auto-detected via the route table (which utun interface carries traffic), not via hardcoded addresses. macOS exposes no clean mapping from interface to owning process, so routing is the reliable signal. File 7 lists all utun interfaces with address and routes, so the raw data is still there even if the auto-flagging misses.
 
+## Contributing
+
+The script is read-only by design and must only ever write to the result directory. That rule is enforced by a static guard ([`tools/readonly-guard.py`](tools/readonly-guard.py)) that runs in CI on every change. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

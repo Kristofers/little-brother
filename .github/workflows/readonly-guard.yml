@@ -1,0 +1,51 @@
+name: read-only guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: static read-only guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Static read-only guard
+        run: python3 tools/readonly-guard.py whats_up_bigbro.sh
+      - name: Bash syntax
+        run: bash -n whats_up_bigbro.sh
+      - name: ShellCheck
+        continue-on-error: true
+        run: shellcheck -S warning whats_up_bigbro.sh
+
+  smoke-macos:
+    name: macOS smoke test (writes only to the result dir)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n whats_up_bigbro.sh
+      - name: Re-run the guard on macOS
+        run: python3 tools/readonly-guard.py whats_up_bigbro.sh
+      - name: Run the audit into a temp dir and verify it only wrote there
+        run: |
+          set -uo pipefail
+          export AUDIT_ROOT="$RUNNER_TEMP/auditroot"
+          bash whats_up_bigbro.sh
+          test -d "$AUDIT_ROOT" || { echo "FAIL: no audit root created"; exit 1; }
+          d="$(find "$AUDIT_ROOT" -maxdepth 1 -type d -name 'audit_*' | head -1)"
+          test -n "$d" || { echo "FAIL: no audit_* subdir"; exit 1; }
+          for f in 01_mde_health 02_managed_prefs 03_full_disk_access \
+                   04_profiles_summary 06_gsa_tunnel 07_gsa_config_tls \
+                   08_system_hardening 09_agents_network; do
+            ls "$d/${f}_"*.txt >/dev/null 2>&1 || { echo "FAIL: missing $f"; exit 1; }
+          done
+          ls "$d"/05_profiles_full_*.xml >/dev/null 2>&1 || { echo "FAIL: missing profile XML"; exit 1; }
+          test -f "$d/whats_up_prompt.md" || { echo "FAIL: prompt not copied"; exit 1; }
+          test ! -e "$HOME/bigbro_audit" || { echo "FAIL: wrote to the default HOME location"; exit 1; }
+          echo "smoke OK: the run populated only $AUDIT_ROOT"
