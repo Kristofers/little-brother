@@ -21,10 +21,14 @@ Concretely, the script must never:
 - change permissions or ownership outside the result dir (`chmod`, `chown`, `chflags`)
 - change system state or policy (`defaults write`, `profiles install/remove`,
   `csrutil`/`spctl`/`fdesetup` mutations, `launchctl load/unload/...`, `scutil --set`,
-  `systemsetup -set...`, `nvram`, `dscl -create/-delete/...`, `security add-/delete-/set-...`)
+  `systemsetup -set...`, `nvram`, `dscl create/-create/...`, `security add-/delete-/set-...`,
+  `plutil -replace/...`, `PlistBuddy ... Set/Add/...`, `chsh`)
 - run write queries against any database (`sqlite3 ... INSERT/UPDATE/DELETE/DROP/...`)
 - make network calls or send data anywhere (`curl`, `wget`, `nc`, `ssh`, `scp`, ...)
 - control processes (`kill`, `pkill`, `killall`, `shutdown`, `reboot`)
+- run code that hides a write from the static scan (`eval`, `bash -c`/`sh -c`, `python3 -c`
+  or `perl -e` that opens files, or a heredoc feeding an interpreter) — the guard now scans
+  these, including interpreter/shell heredoc bodies
 
 Writing to the result directory **is** allowed — that is the whole point. The result
 directory is named by these variables, and a write is tolerated only when the line

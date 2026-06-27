@@ -36,10 +36,12 @@ The redaction exists for one reason: to scrub your **own** identifiers out of th
 ## Running
 
 ```bash
-sudo bash whats_up_bigbro.sh
+sudo bash whats_up_bigbro.sh acme "Project Falcon"
 ```
 
-`sudo` is required to read the system TCC.db, Managed Preferences and the GSA logs. The script `chown`s the result back to your user, so the files can be opened without root afterwards.
+`sudo` is required to read the system TCC.db, Managed Preferences and the GSA logs, and the script now fails early if it is not run as root (without it the privileged reads come back empty). It `chown`s the result back to your user, so the files can be opened without root afterwards.
+
+On a work machine, pass your **company name and project/codenames** as arguments. They are the one class of identifier the script cannot derive on its own, so if you omit them the company name, internal domains and codenames stay in cleartext in the result files (profile names, GSA forwarding rules, root CA subjects). With no terms the script prints a warning to that effect; on a personal machine with nothing org-specific to redact, set `ALLOW_NO_TERMS=1` to silence it.
 
 During the run a step counter is printed to the terminal (`[3/9] ...`) with the expected time per step (short/medium/long) and total time at the end, so you can see something is happening. File 7 is the long step. The status goes to stderr and never ends up in the result files.
 
@@ -55,6 +57,8 @@ The home directory is the deliberate default: the files are easy to find in Find
 AUDIT_ROOT=/tmp/bigbro_audit sudo -E bash whats_up_bigbro.sh
 ```
 
+`AUDIT_ROOT` should point at a dedicated or non-existent directory. The script only tightens permissions and ownership on what the run creates — the per-run `audit_<TS>` subfolder (always `700`), and the root itself only if the script created it — so pointing it at an existing populated directory will not recursively re-own or re-permission your tree.
+
 Wherever they land: the files describe your machine in detail. Delete them once you have uploaded them and are done (`rm -rf <folder>`). `.gitignore` makes sure they never end up in git.
 
 ## Configuration
@@ -67,18 +71,22 @@ Pass your **organisation/sensitive terms** (company name, project names) as argu
 sudo bash whats_up_bigbro.sh acme "Project Falcon"
 ```
 
-Two optional environment variables exist for edge cases:
+If you run it with no terms, the script warns that the company name and codenames are not redacted (they cannot be derived). On a personal machine with nothing org-specific to redact, set `ALLOW_NO_TERMS=1` to silence that warning.
+
+Optional environment variables exist for edge cases:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
+| `ALLOW_NO_TERMS` | `0` | Set to `1` to silence the no-organisation-terms warning (personal machine) |
+| `REDACT` | `on` | `off` disables redaction entirely; only takes `on`/`off` (terms are passed as arguments, never here) |
 | `GSA_TUN_V4` | `10.10.10.10` | Optional confirmation: a utun matching this address is explicitly flagged as GSA |
 | `GSA_TUN_V6` | `fd00::1` | Corresponding IPv6 address |
 
 ## Redaction
 
-The result files leave the machine when you upload them, so by default they are scrubbed of *your own* identifiers first. This protects the operator before sharing with a third party; it never hides what the tool collects. Automatically masked: username and home path, computer name and local hostname, hardware serial and UUID, email/UPN addresses, GUIDs (tenant/org/device/profile IDs) and MAC addresses. RFC1918 local IPs are deliberately kept, since masking them would gut the tunnel and route output.
+The result files leave the machine when you upload them, so by default they are scrubbed of *your own* identifiers first. This protects the operator before sharing with a third party; it never hides what the tool collects. Automatically masked: username and home path, your full name (the display-name form), computer name and local hostname, hardware serial and UUID, email/UPN addresses, JWT tokens, GUIDs (tenant/org/device/profile IDs, both the dashed and the compact 32-hex form) and MAC addresses. IP addresses — both IPv4 and IPv6, local and public — are deliberately kept, since masking them would gut the tunnel and route output; skim files 06/07 if your public IP is sensitive.
 
-GUIDs are mapped to distinct placeholders (`[GUID-1]`, `[GUID-2]`, ...) consistently across all files, so the same id reads the same everywhere and correlation is preserved without exposing the real value.
+GUIDs are mapped to distinct placeholders (`[GUID-1]`, `[GUID-2]`, ...) consistently across all files, so the same id reads the same everywhere and correlation is preserved without exposing the real value. A dashed GUID and its compact 32-hex form map to the same placeholder. (A side effect: a stray 32-hex hash like an MD5 in a log is masked as a `[GUID-N]` too — harmless over-redaction.)
 
 What the script can't detect on its own — company name, project/codenames, internal hostnames — you supply as arguments (multi-word terms are preserved). These are the same terms file 7 greps for among the root CAs, so you pass them once:
 
@@ -86,18 +94,18 @@ What the script can't detect on its own — company name, project/codenames, int
 sudo bash whats_up_bigbro.sh acme "Project Falcon"
 ```
 
-Disable redaction entirely with `REDACT=off`. Redaction is best-effort, not a guarantee, so skim the files before uploading.
+`REDACT` only takes `on`/`off` — organisation terms are passed as arguments, never via `REDACT`. Disable redaction entirely with `REDACT=off`. Redaction is best-effort, not a guarantee, so skim the files before uploading. In particular, an account or display name in the GSA logs (files 06/07) that differs from your derived full name may need adding as a term, and a token that happens to be logged can survive if it is not JWT-shaped.
 
 ## Verifying the redaction
 
 The run ends with two lines on the terminal that let you confirm it worked:
 
 ```
-==> Masked: 12 emails, 7 distinct GUIDs, 3 MAC addresses, 41 literal-term hits.
-==> Verification: no raw emails, GUIDs, MACs or known terms left in the output.
+==> Masked: 12 emails, 2 JWTs, 7 distinct GUIDs, 3 MAC addresses, 41 literal-term hits.
+==> Verification: no raw emails, JWTs, GUIDs, MACs or known terms left in the output.
 ```
 
-The first line shows what was caught (a count of zero where you expected hits is itself a signal — e.g. `0 literal-term hits` means your company name never appeared, or was misspelled in `REDACT`). The second line is a self-check: the script re-scans the masked files for anything that still looks like an email, GUID or MAC, or matches one of your literal terms. If something slipped through it prints `WARNING:` with the `file:line` of each leftover so you can look before uploading.
+The first line shows what was caught (a count of zero where you expected hits is itself a signal — e.g. `0 literal-term hits` means your company name never appeared, or you misspelled it in the arguments you passed). The second line is a self-check: the script re-scans the masked files for anything that still looks like an email, GUID or MAC, or matches one of your literal terms. If something slipped through it prints `WARNING:` with the `file:line` of each leftover so you can look before uploading.
 
 Beyond the built-in check, spot-check by hand in the audit folder — this is the most reliable way to confirm the identifiers you care about are gone. Run these one at a time (avoid trailing `# comments` — interactive zsh on macOS does not treat `#` as a comment and will pass it to the command).
 
@@ -132,13 +140,13 @@ Nine files, one per monitoring surface. Several of them are where the security g
 
 1. `01_mde_health` — Microsoft Defender (MDE): real-time protection, cloud/telemetry, sample submission, exclusions, definition freshness, and whether Defender is actually installed and running (app, daemon, launchd service, system extension) independent of the CLI binary. This is where a deployed-but-inert Defender shows up.
 2. `02_managed_prefs` — Defender and Global Secure Access policy from `/Library/Managed Preferences/`.
-3. `03_full_disk_access` — TCC, both system and user: Full Disk Access plus the monitoring-sensitive permissions (screen recording, Accessibility, input monitoring, camera/microphone). Note: MDM-forced permissions do not show here but in the profile XML (file 5).
+3. `03_full_disk_access` — TCC, both system and user: Full Disk Access plus the monitoring-sensitive permissions (screen recording, Accessibility, input monitoring, camera/microphone, AppleEvents for automating other apps). Note: MDM-forced permissions do not show here but in the profile XML (file 5).
 4. `04_profiles_summary` — MDM enrollment status and Intune profiles, readable summary.
 5. `05_profiles_full` — the same profiles as full XML (PPPC/TCC scope).
 6. `06_gsa_tunnel` — Global Secure Access: is the client/process/system extension running, are there active tunnel interfaces, and is the client started and signed in (the user container's logs and `policy.json`).
 7. `07_gsa_config_tls` — the decisive GSA block: dumps the full forwarding profile (`policy.json`), what is tunneled, whether the route table points at the tunnel, reads both the system and user logs, and checks whether TLS is broken open (non-Apple root CA suggesting MITM inspection).
 8. `08_system_hardening` — SIP, Gatekeeper, FileVault and recovery key escrow to MDM, firewall, SSH/remote login, remote management/screen sharing, bootstrap token.
-9. `09_agents_network` — all system extensions (content filters from any vendor), third-party LaunchDaemons/Agents, PrivilegedHelperTools, running non-Apple services, known EDR/MDM apps, DNS resolver, proxy/PAC, admin accounts.
+9. `09_agents_network` — all system extensions (content filters from any vendor), third-party LaunchDaemons/Agents, PrivilegedHelperTools, running non-Apple services, known EDR/MDM apps, DNS resolver, proxy/PAC, `/etc/hosts` and `/etc/resolver` (custom redirects/resolvers), admin accounts.
 
 ## Analyzing the result
 
