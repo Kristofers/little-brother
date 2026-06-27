@@ -5,31 +5,27 @@
 
 A single bash script, [`whats_up_bigbro.sh`](whats_up_bigbro.sh), that audits an Intune/MDM-managed macOS machine like a security review and maps what an employer can actually see on it.
 
-It serves two goals, weighted equally:
+It is **read-only**: it reads local status and writes nine files, it changes nothing on the machine. It serves two goals, weighted equally:
 
-- **Security.** Like inviting a security expert to look over the managed Mac, it surfaces what is protected, what is monitored, and the gaps to close. The report recommends what should be monitored under zero trust and flags protections that are deployed but not actually running (for example a Defender profile present while the engine is not running). That helps the employer and the security owner, it does not work against them.
-- **Privacy.** Keep genuinely personal data (a personal password manager, personal notes) off the work machine, and understand what is visible. Work data and work activity remain the employer's to monitor.
+- **Security.** Like inviting a security expert to look over the managed Mac, it surfaces what is protected, what is monitored, and the gaps to close. The report recommends what should be monitored under zero trust and flags protections that are deployed but not actually running (for example a Defender profile present while the engine is not running). It works *for* the employer and the security owner, not against them.
+- **Privacy.** Keep genuinely *personal* data (a personal password manager, personal notes) off the work machine, and understand what is visible. Work data and work activity remain the employer's to monitor.
 
-The point is finding the right balance between the two. The script is **read-only**: it reads local status and writes nine files, it changes nothing on the machine. Upload the result to Claude and get back a plain-language report that answers two sets of questions at once, held in balance:
+Upload the result to Claude and get back a plain-language report that answers two sets of questions at once, held in balance:
 
 - **For a security owner:** Is what we deployed actually running, or only present as a profile? Is Defender's engine live, is the GSA tunnel carrying traffic, is FileVault escrowed? What is reasonable under zero trust, and what is missing to catch a compromised machine or protect company IP?
-- **For an individual:** How do I keep my *personal* data off a work machine, and what can the employer see in the meantime: files, domains, page content? Is everything monitored, or only work traffic?
+- **For an individual:** How do I keep my *personal* data off a work machine, and what can the employer see in the meantime: which files are readable, which domains get browsed, the page content too? Is everything monitored, or only work traffic, and is TLS being inspected?
+
+The script collects the actual settings so both can be answered with data instead of guesses, and so each gap can be named and closed.
 
 ## Scope and ethics
 
-This is a security-audit and personal-privacy tool, weighted equally toward both. On the security side it helps the employer or security owner see what is protected, what is monitored, and what should be monitored under zero trust, including protections that are deployed but not actually running. It works *for* the security owner, not against them. On the privacy side it helps a person understand what is visible and keep their genuinely *personal* data (a personal password manager, personal notes) off a work machine. It is read-only and changes nothing.
+The philosophy is zero trust with privacy: assume employees are honest, so the company should be able to detect a compromised machine but not monitor private activity. That single premise drives both halves of the report at once: the security gaps the owner should close, and the personal data the individual should keep off the machine.
 
-It is explicitly **not** for evading security controls, disabling monitoring, hiding misconduct, or tampering with a managed device, and it cannot do any of those things, because it only reads. Work data and work activity remain the employer's to monitor. The honest-employee premise serves both goals at once: build controls that catch a compromised machine, and respect the person's private life.
-
-## Why
-
-On a work machine you rarely know two things: whether the deployed controls are actually working, and what the employer actually sees. Is the Defender profile that was pushed backed by a running engine? Is all traffic tunneled, or only work traffic? Is TLS being inspected, and is it only which domains get browsed or the page content too? Are files readable? This script collects the actual settings so both can be answered with data instead of guesses, and so each gap can be named and closed.
-
-The philosophy is zero trust with privacy: assume employees are honest, so the company should be able to detect a compromised machine but not monitor private activity. The same honest-employee, detect-the-attacker premise drives both halves of the report: the security gaps the owner should close, and the personal data the individual should keep off the machine.
+The tool is explicitly **not** for evading security controls, disabling monitoring, hiding misconduct, or tampering with a managed device, and it cannot do any of those things, because it only reads.
 
 ## Principles: no security or privacy by obscurity
 
-The intent of this tool is fully open, and that is the point. It is a single readable script that only reads the machine and changes nothing, and the read-only rule is **enforced** in CI ([`tools/readonly-guard.py`](tools/readonly-guard.py)), not asserted on trust. Run it, read it, check it.
+The intent of this tool is fully open, and that is the point. It is a single readable script, and the read-only rule is **enforced** in CI ([`tools/readonly-guard.py`](tools/readonly-guard.py)), not asserted on trust. Run it, read it, check it.
 
 The redaction exists for one reason: to scrub your **own** identifiers out of the files before you upload them. It never hides what the tool collects or does; every collection step is documented here and visible in the source. Security and privacy come from clear, inspectable policy and code, not from hiding things under the hood.
 
