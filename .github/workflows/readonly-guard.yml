@@ -37,18 +37,33 @@ jobs:
           set -uo pipefail
           AUDIT_ROOT="$RUNNER_TEMP/auditroot"
           # Representative system targets a mutating regression would plausibly touch. The
-          # audit only reads these, so their mtimes must be identical before and after. This
-          # is a partial proof (not a full-filesystem diff, which is too noisy on CI), but it
-          # turns "read-only" from an unchecked claim into a checked one for real targets.
-          watch=(/etc/hosts /etc/sudoers /Library/Keychains/System.keychain \
-                 /Library/Preferences /etc/resolver /Library/Managed\ Preferences)
-          snap() { for p in "${watch[@]}"; do [ -e "$p" ] && printf '%s %s\n' "$(stat -f '%m' "$p")" "$p"; done; }
-          snap >"$RUNNER_TEMP/mtimes.before"
+          # audit only reads these, so the snapshot below must be identical before and after.
+          # This is a partial proof (not a full-filesystem diff, which is too noisy on CI), but
+          # it turns "read-only" from an unchecked claim into a checked one for real targets.
+          #
+          # Regular files are watched by mtime — a stable signal that only moves on a real write.
+          # Directories are watched by their entry list, NOT their own mtime: macOS daemons
+          # (cfprefsd) rewrite plists under /Library/Preferences in place, which bumps the
+          # directory's mtime with no involvement from the audited script and produced a false
+          # "not read-only" failure. A read-only run never adds or removes an entry, so the
+          # sorted listing is the sound signal — an in-place OS rewrite no longer trips the
+          # guard, while the script creating or deleting a file still would.
+          watch_files=(/etc/hosts /etc/sudoers /Library/Keychains/System.keychain)
+          watch_dirs=(/Library/Preferences /etc/resolver "/Library/Managed Preferences")
+          snap() {
+            for p in "${watch_files[@]}"; do
+              [ -e "$p" ] && printf 'file %s %s\n' "$(stat -f '%m' "$p")" "$p"
+            done
+            for d in "${watch_dirs[@]}"; do
+              [ -d "$d" ] && find "$d" -maxdepth 1 2>/dev/null | sort | sed 's/^/entry /'
+            done
+          }
+          snap >"$RUNNER_TEMP/watch.before"
           # Root is required; pass AUDIT_ROOT and silence the no-terms warning explicitly.
           sudo AUDIT_ROOT="$AUDIT_ROOT" ALLOW_NO_TERMS=1 bash whats_up_bigbro.sh
-          snap >"$RUNNER_TEMP/mtimes.after"
-          if ! diff -u "$RUNNER_TEMP/mtimes.before" "$RUNNER_TEMP/mtimes.after"; then
-            echo "FAIL: a watched system file changed — the run was not read-only"; exit 1
+          snap >"$RUNNER_TEMP/watch.after"
+          if ! diff -u "$RUNNER_TEMP/watch.before" "$RUNNER_TEMP/watch.after"; then
+            echo "FAIL: a watched system path changed — the run was not read-only"; exit 1
           fi
           test -d "$AUDIT_ROOT" || { echo "FAIL: no audit root created"; exit 1; }
           d="$(find "$AUDIT_ROOT" -maxdepth 1 -type d -name 'audit_*' | head -1)"
