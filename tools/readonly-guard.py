@@ -26,14 +26,18 @@ RESULT_VARS = (r'(?:AUDIT_ROOT|AUDIT_DIR|PROMPT_FILE|MDE_FILE|MGMT_FILE|TCC_FILE
 RESULT_REF = re.compile(r'\$\{?' + RESULT_VARS + r'\b')
 
 # Command position: start of a logical line, after a shell separator, or after a
-# wrapper that runs another command (sudo, env, xargs, ...).
+# wrapper that runs another command (sudo, env, xargs, ...). The trailing optional path
+# prefix lets a command invoked by absolute/relative path still be recognised, e.g.
+# /usr/libexec/PlistBuddy, /bin/rm or ./tool.
 CP = (r'(?:^|[;&|]|&&|\|\||\{|\(|'
       r'\bthen\b|\bdo\b|\bsudo\b|\bcommand\b|\bexec\b|\benv\b|\bnice\b|\bxargs\b|'
-      r'\btime\b|\bbuiltin\b)\s*')
+      r'\btime\b|\bbuiltin\b)\s*(?:[\w.-]*/)*')
 
 # Commands with no read-only use here — flagged wherever they appear at command position.
+# 'eval' is included because it runs an arbitrary string the static scan cannot see; 'chsh'
+# changes a login shell.
 ALWAYS = re.compile(
-    CP + r'(dd|mkfifo|mknod|touch|truncate|chflags|chgrp|install|tee|'
+    CP + r'(dd|mkfifo|mknod|touch|truncate|chflags|chgrp|chsh|install|tee|eval|'
     r'nvram|diskutil|kextload|kextunload|pmset|networksetup|softwareupdate|mdutil|'
     r'killall|pkill|kill|shutdown|reboot|halt|'
     r'curl|wget|nc|ncat|netcat|telnet|ssh|scp|sftp|ftp|rsync|'
@@ -47,7 +51,7 @@ INPLACE = re.compile(CP + r'(?:perl|sed)\b[^\n]*?\s-i(?:\b|\.)')  # perl -i / se
 # (label, tool-at-command-position, mutating-pattern-anywhere-on-line)
 DUAL = [
     ('dscl write',            re.compile(CP + r'dscl\b'),
-     re.compile(r'\s-(?:create|delete|change|append|merge|passwd|d)\b')),
+     re.compile(r'\s-?(?:create|delete|change|append|merge|passwd)\b')),
     ('defaults write',        re.compile(CP + r'defaults\b'),
      re.compile(r'\bdefaults\s+(?:write|delete|rename|import)\b')),
     ('launchctl mutate',      re.compile(CP + r'launchctl\b'),
@@ -76,6 +80,23 @@ DUAL = [
      re.compile(r'\s-(?:delete|exec|execdir|ok|okdir|fprint|fprintf|fputc)\b')),
     ('sqlite3 write',         re.compile(CP + r'sqlite3\b'),
      re.compile(r'\b(?:INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|REPLACE|TRUNCATE|VACUUM|ATTACH|REINDEX)\b', re.I)),
+    ('plutil mutate',         re.compile(CP + r'plutil\b'),
+     re.compile(r'\bplutil\b[^\n]*\s-(?:replace|insert|remove|convert|extract)\b')),
+    ('PlistBuddy mutate',     re.compile(CP + r'PlistBuddy\b'),
+     re.compile(r'\b(?:Set|Add|Delete|Merge|Import|Copy)\b')),
+    ('shell -c',              re.compile(CP + r'(?:bash|sh|zsh|dash|ksh)\b'),
+     re.compile(r'\s-c\b')),
+    # Interpreters used as file writers (open(...,'w'/'a'/'x'/'>'/'+'), os.remove, shutil,
+    # File.write, fs.writeFileSync, system(), unlink, ...). The script's own python3/perl use
+    # (json.tool, the perl -i redaction) contains none of these primitives, so it stays clean.
+    ('interpreter write',     re.compile(CP + r'(?:python3?|perl|ruby|node|php)\b'),
+     re.compile(r'(?:os\.(?:remove|unlink|rename|rmdir|mkdir|makedirs|chmod|chown|truncate)\b|'
+                r'shutil\.(?:rmtree|move|copy\w*)|'
+                r'open\s*\([^)]*[\'"][^\'")]*[wax>+]|'
+                r'File\.(?:write|delete|open|new|rename|unlink)|IO\.write|FileUtils\.|'
+                r'\.(?:write|writeFile|writeFileSync|appendFile\w*|unlink\w*|rm|rmSync|'
+                r'rmdir\w*|truncate\w*)\s*\(|'
+                r'\bunlink\b|\bsystem\s*\()')),
 ]
 
 DEV_OK = re.compile(r'^(?:/dev/(?:null|stdout|stderr|tty)|&\d+|&-)$')
@@ -122,16 +143,28 @@ def logical_lines(text):
             i += 1
             continue
         start = i + 1
-        # Heredoc: scan its start line, then skip the body up to the delimiter.
+        # Heredoc: scan its start line. If the heredoc feeds an interpreter or a shell, the
+        # body is code, not data, so scan it too — a mutating payload routed through
+        # 'python3 <<EOF' or 'bash <<EOF' would otherwise be invisible. For an interpreter,
+        # each body line is prefixed with the interpreter name so the 'interpreter write'
+        # rule (tool + write-primitive on one line) fires. For a shell, body lines are scanned
+        # as-is so 'rm ...' / '> /etc/...' are caught. Plain data heredocs (cat, the final
+        # instructions block) are skipped as before.
         m = heredoc_re.search(line)
         if m:
             delim = m.group(1)
-            buf = line
+            lead = stripped.split('<<', 1)[0]
+            interp = re.search(r'\b(?:python3?|perl|ruby|node|php)\b', lead)
+            shell = re.search(r'\b(?:bash|sh|zsh|dash|ksh)\b', lead)
+            out.append((start, line))
             i += 1
             while i < n and raw[i].strip() != delim:
+                if interp:
+                    out.append((i + 1, interp.group(0) + ' ' + raw[i]))
+                elif shell:
+                    out.append((i + 1, raw[i]))
                 i += 1
             i += 1  # consume the delimiter line
-            out.append((start, buf))
             continue
         # Join backslash continuations and unterminated quoted strings.
         buf = line

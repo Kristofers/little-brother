@@ -23,7 +23,7 @@ jobs:
         run: shellcheck -S warning whats_up_bigbro.sh
 
   smoke-macos:
-    name: macOS smoke test (writes only to the result dir)
+    name: macOS smoke test (read-only against watched paths + result dir)
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
@@ -32,11 +32,24 @@ jobs:
         run: bash -n whats_up_bigbro.sh
       - name: Re-run the guard on macOS
         run: python3 tools/readonly-guard.py whats_up_bigbro.sh
-      - name: Run the audit into a temp dir and verify it only wrote there
+      - name: Run the audit (as root) and verify it only wrote to the result dir
         run: |
           set -uo pipefail
-          export AUDIT_ROOT="$RUNNER_TEMP/auditroot"
-          bash whats_up_bigbro.sh
+          AUDIT_ROOT="$RUNNER_TEMP/auditroot"
+          # Representative system targets a mutating regression would plausibly touch. The
+          # audit only reads these, so their mtimes must be identical before and after. This
+          # is a partial proof (not a full-filesystem diff, which is too noisy on CI), but it
+          # turns "read-only" from an unchecked claim into a checked one for real targets.
+          watch=(/etc/hosts /etc/sudoers /Library/Keychains/System.keychain \
+                 /Library/Preferences /etc/resolver /Library/Managed\ Preferences)
+          snap() { for p in "${watch[@]}"; do [ -e "$p" ] && printf '%s %s\n' "$(stat -f '%m' "$p")" "$p"; done; }
+          snap >"$RUNNER_TEMP/mtimes.before"
+          # Root is required; pass AUDIT_ROOT and silence the no-terms warning explicitly.
+          sudo AUDIT_ROOT="$AUDIT_ROOT" ALLOW_NO_TERMS=1 bash whats_up_bigbro.sh
+          snap >"$RUNNER_TEMP/mtimes.after"
+          if ! diff -u "$RUNNER_TEMP/mtimes.before" "$RUNNER_TEMP/mtimes.after"; then
+            echo "FAIL: a watched system file changed — the run was not read-only"; exit 1
+          fi
           test -d "$AUDIT_ROOT" || { echo "FAIL: no audit root created"; exit 1; }
           d="$(find "$AUDIT_ROOT" -maxdepth 1 -type d -name 'audit_*' | head -1)"
           test -n "$d" || { echo "FAIL: no audit_* subdir"; exit 1; }
@@ -48,4 +61,4 @@ jobs:
           ls "$d"/05_profiles_full_*.xml >/dev/null 2>&1 || { echo "FAIL: missing profile XML"; exit 1; }
           test -f "$d/whats_up_prompt.md" || { echo "FAIL: prompt not copied"; exit 1; }
           test ! -e "$HOME/bigbro_audit" || { echo "FAIL: wrote to the default HOME location"; exit 1; }
-          echo "smoke OK: the run populated only $AUDIT_ROOT"
+          echo "smoke OK: populated only $AUDIT_ROOT and left watched system files untouched"

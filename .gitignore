@@ -1,7 +1,10 @@
 # Run results — may contain sensitive machine info, never check in
 bigbro_audit/
-bigbrotheraudit/
 audit_*/
 
 # macOS
 .DS_Store
+
+# Python bytecode from the dev/CI guard tooling
+__pycache__/
+*.pyc
