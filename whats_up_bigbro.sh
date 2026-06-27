@@ -1,56 +1,49 @@
 #!/bin/bash
-# whats_up_bigbro.sh — maps what the employer can see on the machine
-# Run with: sudo bash whats_up_bigbro.sh
+# whats_up_bigbro.sh — map what an employer can see on an Intune/MDM-managed Mac.
 #
-# v2: added the GSA forwarding profile, GSA logs, TLS inspection check
-#     and the actual route table. Those blocks decide whether the GSA tunnel
-#     captures anything meaningful or just sits empty.
-# v3: configurable GSA tunnel addresses and an optional org name for the TLS
-#     grep, no hardcoded company-specific values left. Expanded prompt that also
-#     asks for a zero trust recommendation and advice on protecting own secrets.
-# v4: file 1 now determines whether Defender actually runs (app, support files,
-#     wdavdaemon, launchd, system extension) independent of the mdatp binary.
-#     File 4 also reads MDM enrollment status. The prompt requires a neutral,
-#     impersonal Markdown report with concrete examples and Mermaid diagrams,
-#     written for multiple roles.
-# v5: file 1 reads definition freshness. File 3 expanded to screen/input/camera
-#     TCC plus the user's own TCC.db. Two new files: 08 system hardening (SIP,
-#     Gatekeeper, FileVault+escrow, firewall, remote access, bootstrap token) and
-#     09 other agents & network visibility (system extensions, launchd, DNS/proxy,
-#     admin accounts). USER_HOME is resolved via dscl so user paths work under sudo.
-# v6: the GSA user container (~/Library/Containers/com.microsoft.globalsecureaccess)
-#     is read in. File 6 checks whether the client is started and signed in. File 7
-#     dumps the full policy.json (forwarding profile) and reads both the system and
-#     user logs. Log selection uses lexical name sorting, not ls -t, because stat on
-#     the container's files can hang on a cold TCC access.
-# v7: a step counter on the terminal (stderr) with expected time per step and total
-#     time, so the run does not feel hung. The status never ends up in the result files.
-# v8: default-on redaction pass over the result files (username, hostname, serial,
-#     hardware UUID, emails, GUIDs, MAC addresses), plus user-supplied literal terms
-#     via REDACT=... or command-line arguments. Disable with REDACT=off. GUIDs are
-#     mapped to distinct [GUID-N] consistently across all files. The analysis prompt
-#     lives in whats_up_prompt.md next to the script and is copied into the audit folder.
-# v9: after redaction, a verification pass prints what was masked and re-scans the
-#     output for any residual emails, GUIDs, MACs or known terms, warning with the
-#     file:line of anything that slipped through.
+# What it does: runs a series of read-only checks and writes the results to a private
+# folder, one file per monitoring surface, so a person can upload them to Claude and
+# understand, in plain language, what the employer can and cannot see and do. It reads
+# the machine only and changes nothing; the result files are redacted of personal
+# identifiers before they leave the machine.
+#
+# Surfaces collected (one file each):
+#   01 Microsoft Defender (MDE): protection state, telemetry, exclusions, definition
+#      freshness, and whether the engine actually runs (not just the policy).
+#   02 Managed Preferences: Defender and Global Secure Access (GSA) policy.
+#   03 TCC: Full Disk Access plus screen/input/camera/mic permissions (system + user).
+#   04 MDM enrollment status and Intune profiles (readable summary).
+#   05 The same profiles as full XML (PPPC/TCC scope).
+#   06 GSA tunnel: client/process/extension state, and whether it is signed in.
+#   07 GSA forwarding policy (what is tunneled), routes, and a TLS-inspection check.
+#   08 System hardening: SIP, Gatekeeper, FileVault + key escrow, firewall, remote
+#      access, bootstrap token.
+#   09 Other agents and network visibility: system extensions, launchd, DNS/proxy,
+#      admin accounts.
+#
+# Transparency: this script is meant to be read. There are no hidden actions — security
+# and privacy here come from clear policy and open, inspectable code, not from obscurity.
+# It is read-only by design, and that is enforced in CI (tools/readonly-guard.py), not
+# asserted on trust.
+#
+# Run with: sudo bash whats_up_bigbro.sh [term ...]
+#   Positional arguments are sensitive/organisation terms (company name, project names).
+#   They are used openly in two places: file 07 searches the system root CAs for them
+#   (to spot a company TLS-inspection CA), and the redaction pass scrubs them from every
+#   result file. Disable the redaction pass with REDACT=off.
 
 # --- Configuration (optional) ---
-# File 7 now auto-detects which utun interface actually carries traffic via the
-# route table, so this is normally NOT needed. The addresses are only used as extra
-# confirmation: if a utun matches them it is explicitly flagged as GSA. Defaults are
-# GSA's usual tunnel addresses. Find your own with: ifconfig | grep -A4 '^utun'
+# File 7 auto-detects which utun interface actually carries traffic via the route table,
+# so these are normally NOT needed. They are only used as extra confirmation: if a utun
+# matches them it is explicitly flagged as GSA. Find yours with: ifconfig | grep -A4 '^utun'
 GSA_TUN_V4="${GSA_TUN_V4:-10.10.10.10}"
 GSA_TUN_V6="${GSA_TUN_V6:-fd00::1}"
-# Optional: company name to look for among the root CAs in file 7 (TLS inspection).
-# Leave empty to only match generic patterns (microsoft, proxy, inspect ...).
-ORG_NAME="${ORG_NAME:-}"
 
-# Redaction: by default the result files are scrubbed of host/identity markers
-# (username, hostname, serial, hardware UUID, emails, GUIDs, MAC addresses) before
-# they leave the machine. Add your own literal terms (company name, project names)
-# via REDACT (comma-separated) or as command-line arguments. Disable with REDACT=off.
-#   sudo bash whats_up_bigbro.sh acme "Project X"
-#   REDACT=off sudo -E bash whats_up_bigbro.sh
+# Sensitive/organisation terms passed as arguments (company name, project names, ...).
+# Used openly in two places: the file 07 root-CA grep and the redaction pass.
+TERMS=("$@")
+
+# Redaction of the result files is on by default; disable with REDACT=off.
 REDACT="${REDACT:-on}"
 
 # The logged-in user's home directory. Under sudo $HOME is often root's directory,
@@ -345,7 +338,7 @@ echo -e "\n### E. TLS inspection — is the encryption broken open? ###"
 echo "(Decides whether only the domain is visible, or page content too. Looks for"
 echo " a non-Apple root CA in the system keychain — a MITM cert stands out.)"
 TLS_PAT="microsoft|secure access|proxy|inspect|tls"
-[ -n "$ORG_NAME" ] && TLS_PAT="$TLS_PAT|$ORG_NAME"
+for t in "${TERMS[@]}"; do [ -n "$t" ] && TLS_PAT="$TLS_PAT|$t"; done
 security dump-trust-settings -d 2>/dev/null | grep -iE "$TLS_PAT" \
   || echo "(no obvious inspection CA in admin trust)"
 echo "--- All non-Apple root CAs (review whether any looks like a proxy/MITM CA) ---"
@@ -462,12 +455,11 @@ if [ "$REDACT" != "off" ]; then
   SERIAL="$(printf '%s' "$HWINFO" | awk -F'"' '/IOPlatformSerialNumber/{print $4}')"
   HWUUID="$(printf '%s' "$HWINFO" | awk -F'"' '/IOPlatformUUID/{print $4}')"
   # Literal terms to scrub, one per line: derived host identifiers + the user's own
-  # terms (positional args, each preserved as-is; REDACT env split on commas only so
-  # multi-word terms like "Project X" survive). Trim, drop empties, dedupe.
+  # terms (the positional arguments in TERMS, each preserved as-is so multi-word terms
+  # like "Project X" survive). Trim, drop empties, dedupe.
   LIT_JOINED="$(
-    { printf '%s\n' "$TARGET_USER" "$CNAME" "$LHOST" "$SERIAL" "$HWUUID" "$@"
-      [ "$REDACT" != "on" ] && printf '%s' "$REDACT" | tr ',' '\n'
-    } | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u
+    printf '%s\n' "$TARGET_USER" "$CNAME" "$LHOST" "$SERIAL" "$HWUUID" "${TERMS[@]}" \
+      | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u
   )"
   export LIT_JOINED
   # One perl process over all files so the GUID map is shared: the same GUID becomes

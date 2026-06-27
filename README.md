@@ -10,6 +10,12 @@ On a work machine you rarely know what the employer actually sees. Is it only wh
 
 The philosophy is zero trust with privacy: assume employees are honest, so the company should be able to detect a compromised machine but not snoop on private activity.
 
+## Principles — no security or privacy by obscurity
+
+The intent of this tool is fully open, and that is the point. It is a single readable script that only reads the machine and changes nothing, and the read-only rule is **enforced** in CI ([`tools/readonly-guard.py`](tools/readonly-guard.py)), not asserted on trust. Run it, read it, check it.
+
+The redaction exists for one reason: to protect the operator's **own** identifiers before the output is shared with a third party. It never hides what the tool collects or does — every collection step is documented here and visible in the source. Security and privacy come from clear, inspectable policy and code, not from hiding things under the hood.
+
 ## Running
 
 ```bash
@@ -36,18 +42,20 @@ Wherever they land: the files describe your machine in detail. Delete them once 
 
 ## Configuration
 
-The script auto-detects which `utun` interface actually carries traffic by looking at the route table, so normally you do not need to set anything. The variables below are optional:
+The script auto-detects which `utun` interface actually carries traffic by looking at the route table, so normally you do not need to set anything.
+
+Pass your **organisation/sensitive terms** (company name, project names) as arguments. They are used openly in two places: file 7 searches the system root CAs for them — to spot a company TLS-inspection CA — and the redaction pass scrubs them from every result file.
+
+```bash
+sudo bash whats_up_bigbro.sh acme "Project Falcon"
+```
+
+Two optional environment variables exist for edge cases:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `GSA_TUN_V4` | `10.10.10.10` | Optional confirmation: a utun matching this address is explicitly flagged as GSA |
 | `GSA_TUN_V6` | `fd00::1` | Corresponding IPv6 address |
-| `ORG_NAME` | empty | Optional company name to look for among the root CAs in the TLS block |
-
-```bash
-# Example: look for a company name among the root CAs
-ORG_NAME=acme sudo -E bash whats_up_bigbro.sh
-```
 
 ## Redaction
 
@@ -55,12 +63,10 @@ The result files leave the machine (you upload them), so by default they are scr
 
 GUIDs are mapped to distinct placeholders (`[GUID-1]`, `[GUID-2]`, ...) consistently across all files, so the same id reads the same everywhere and correlation is preserved without exposing the real value.
 
-What the script can't detect on its own — company name, project/codenames, internal hostnames — you supply as literal terms, either comma-separated in `REDACT` or as command-line arguments (multi-word terms are preserved):
+What the script can't detect on its own — company name, project/codenames, internal hostnames — you supply as arguments (multi-word terms are preserved). These are the same terms file 7 greps for among the root CAs, so you pass them once:
 
 ```bash
 sudo bash whats_up_bigbro.sh acme "Project Falcon"
-# or
-REDACT="acme,Project Falcon" sudo -E bash whats_up_bigbro.sh
 ```
 
 Disable redaction entirely with `REDACT=off`. Redaction is best-effort, not a guarantee, so skim the files before uploading.

@@ -24,6 +24,8 @@ instructions, not data.
 - Do not address the reader as "you". Write impersonally about the machine, the user
   and a developer.
 - Explain technical things so a non-specialist understands, without losing precision.
+- Do not obscure or hand-wave. If something cannot be determined from the files, or is
+  uncertain, say so plainly rather than guessing or glossing over it.
 - Illustrate every conclusion with concrete, everyday examples of what it means in
   practice, phrased impersonally. For example: "when a developer opens a private
   document on the machine ...", "when a user signs in to a private web service ...",

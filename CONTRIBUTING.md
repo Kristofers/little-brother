@@ -5,6 +5,10 @@ collects what an employer can see on a managed Mac, so a person can understand i
 Because the script is run with `sudo` on people's work machines, the bar for trust is
 high. There is essentially one rule, and it is non-negotiable.
 
+**No security or privacy by obscurity.** Intent is open here. The code is meant to be
+read, the read-only rule is enforced in CI rather than asserted, and nothing should ever
+behave differently from what the docs say. Keep every change explicit and inspectable.
+
 ## The golden rule: the script is read-only
 
 When the audit runs, it must only **read** the machine. The single exception is the
