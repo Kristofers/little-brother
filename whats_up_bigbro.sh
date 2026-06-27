@@ -1,0 +1,585 @@
+#!/bin/bash
+# whats_up_bigbro.sh — maps what the employer can see on the machine
+# Run with: sudo bash whats_up_bigbro.sh
+#
+# v2: added the GSA forwarding profile, GSA logs, TLS inspection check
+#     and the actual route table. Those blocks decide whether the GSA tunnel
+#     captures anything meaningful or just sits empty.
+# v3: configurable GSA tunnel addresses and an optional org name for the TLS
+#     grep, no hardcoded company-specific values left. Expanded prompt that also
+#     asks for a zero trust recommendation and advice on protecting own secrets.
+# v4: file 1 now determines whether Defender actually runs (app, support files,
+#     wdavdaemon, launchd, system extension) independent of the mdatp binary.
+#     File 4 also reads MDM enrollment status. The prompt requires a neutral,
+#     impersonal Markdown report with concrete examples and Mermaid diagrams,
+#     written for multiple roles.
+# v5: file 1 reads definition freshness. File 3 expanded to screen/input/camera
+#     TCC plus the user's own TCC.db. Two new files: 08 system hardening (SIP,
+#     Gatekeeper, FileVault+escrow, firewall, remote access, bootstrap token) and
+#     09 other agents & network visibility (system extensions, launchd, DNS/proxy,
+#     admin accounts). USER_HOME is resolved via dscl so user paths work under sudo.
+# v6: the GSA user container (~/Library/Containers/com.microsoft.globalsecureaccess)
+#     is read in. File 6 checks whether the client is started and signed in. File 7
+#     dumps the full policy.json (forwarding profile) and reads both the system and
+#     user logs. Log selection uses lexical name sorting, not ls -t, because stat on
+#     the container's files can hang on a cold TCC access.
+# v7: a step counter on the terminal (stderr) with expected time per step and total
+#     time, so the run does not feel hung. The status never ends up in the result files.
+# v8: default-on redaction pass over the result files (username, hostname, serial,
+#     hardware UUID, emails, GUIDs, MAC addresses), plus user-supplied literal terms
+#     via REDACT=... or command-line arguments. Disable with REDACT=off. GUIDs are
+#     mapped to distinct [GUID-N] consistently across all files. The analysis prompt
+#     lives in whats_up_prompt.md next to the script and is copied into the audit folder.
+# v9: after redaction, a verification pass prints what was masked and re-scans the
+#     output for any residual emails, GUIDs, MACs or known terms, warning with the
+#     file:line of anything that slipped through.
+
+# --- Configuration (optional) ---
+# File 7 now auto-detects which utun interface actually carries traffic via the
+# route table, so this is normally NOT needed. The addresses are only used as extra
+# confirmation: if a utun matches them it is explicitly flagged as GSA. Defaults are
+# GSA's usual tunnel addresses. Find your own with: ifconfig | grep -A4 '^utun'
+GSA_TUN_V4="${GSA_TUN_V4:-10.10.10.10}"
+GSA_TUN_V6="${GSA_TUN_V6:-fd00::1}"
+# Optional: company name to look for among the root CAs in file 7 (TLS inspection).
+# Leave empty to only match generic patterns (microsoft, proxy, inspect ...).
+ORG_NAME="${ORG_NAME:-}"
+
+# Redaction: by default the result files are scrubbed of host/identity markers
+# (username, hostname, serial, hardware UUID, emails, GUIDs, MAC addresses) before
+# they leave the machine. Add your own literal terms (company name, project names)
+# via REDACT (comma-separated) or as command-line arguments. Disable with REDACT=off.
+#   sudo bash whats_up_bigbro.sh acme "Project X"
+#   REDACT=off sudo -E bash whats_up_bigbro.sh
+REDACT="${REDACT:-on}"
+
+# The logged-in user's home directory. Under sudo $HOME is often root's directory,
+# so the real user's home is resolved via dscl. Used for user-level directories
+# (TCC, GSA cache) and as the default for the result folder.
+TARGET_USER="${SUDO_USER:-$USER}"
+USER_HOME="$(dscl . -read /Users/"$TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+[ -z "$USER_HOME" ] && USER_HOME="$HOME"
+
+# Where the result goes. Default is the user's home directory (easy to find, stays
+# until the files are uploaded and deleted). To use a tmp directory that is cleared
+# on reboot: run with AUDIT_ROOT=/tmp/bigbro_audit sudo -E bash whats_up_bigbro.sh
+AUDIT_ROOT="${AUDIT_ROOT:-$USER_HOME/bigbro_audit}"
+TS="$(date +%Y%m%d_%H%M)"
+AUDIT_DIR="$AUDIT_ROOT/audit_$TS"   # one subfolder per run
+mkdir -p "$AUDIT_DIR"
+chmod 700 "$AUDIT_ROOT" "$AUDIT_DIR" 2>/dev/null   # only your user should be able to read it
+
+# Find the mdatp binary (not always in the sudo PATH)
+MDATP=""
+for p in /usr/local/bin/mdatp /opt/microsoft/mdatp/bin/mdatp "$(command -v mdatp 2>/dev/null)"; do
+  [ -x "$p" ] && MDATP="$p" && break
+done
+
+# Status output to the terminal (stderr, so it never ends up in the result files).
+# Expected time per step: short = seconds, medium = up to ~30 s, long = can take minutes.
+TOTAL_STEPS=9
+SECONDS=0
+step() { printf '[%d/%d] %-42s ~%s\n' "$1" "$TOTAL_STEPS" "$2" "$3" >&2; }
+
+echo "==> Collecting audit into $AUDIT_DIR" >&2
+echo "    Usually takes 1-3 minutes. File 7 is the long one (it searches the whole home directory)." >&2
+
+# --- File 1: MDE health & sample policy ---
+step 1 "Microsoft Defender (MDE) — status & definitions" "medium"
+MDE_FILE="$AUDIT_DIR/01_mde_health_$TS.txt"
+{
+echo "=== MDE HEALTH $(date) ==="
+echo "mdatp binary: ${MDATP:-(not found)}"
+if [ -n "$MDATP" ]; then
+  echo -e "\n### Health overview ###";                              "$MDATP" health
+  echo -e "\n### Real-time protection ###";                         "$MDATP" health --field real_time_protection_enabled
+  echo -e "\n### Cloud enabled (telemetry to MS) ###";              "$MDATP" health --field cloud_enabled
+  echo -e "\n### Passive mode ###";                                 "$MDATP" health --field passive_mode_enabled
+  echo -e "\n### Sample submission (uploads file content?) ###";    "$MDATP" health --field cloud_automatic_sample_submission_consent
+  echo -e "\n### Tamper protection ###";                            "$MDATP" health --field tamper_protection
+  echo -e "\n### Org/tenant id (which SOC) ###";                    "$MDATP" health --field org_id 2>/dev/null
+  echo -e "\n### EDR tags ###";                                     "$MDATP" edr tag list 2>/dev/null
+  echo -e "\n### Exclusions (NOT scanned) ###";                     "$MDATP" exclusion list 2>/dev/null
+  echo -e "\n### Definitions up to date? (old engine = weaker protection) ###"
+  echo -n "definitions_status:  "; "$MDATP" health --field definitions_status 2>/dev/null
+  echo -n "definitions_updated: "; "$MDATP" health --field definitions_updated 2>/dev/null
+  echo -n "definitions_version: "; "$MDATP" health --field definitions_version 2>/dev/null
+  echo -n "engine_version:      "; "$MDATP" health --field engine_version 2>/dev/null
+  echo -n "app_version:         "; "$MDATP" health --field app_version 2>/dev/null
+else
+  echo -e "\n(mdatp binary missing in known paths — checking below whether Defender is installed anyway)"
+fi
+
+# Independent of the CLI binary: is Defender actually installed and running?
+# (If the binary is not found above, these checks decide whether the engine runs anyway.)
+echo -e "\n### Is the Defender app installed (independent of the CLI binary)? ###"
+ls -ld "/Applications/Microsoft Defender.app" 2>/dev/null \
+  || ls -ld "/Applications/Microsoft Defender ATP.app" 2>/dev/null \
+  || echo "(no Defender app in /Applications)"
+echo -e "\n### Defender support files on disk ###"
+ls -la "/Library/Application Support/Microsoft/Defender/" 2>/dev/null \
+  || echo "(no /Library/Application Support/Microsoft/Defender directory)"
+echo -e "\n### Defender processes running? (wdavdaemon = the engine itself) ###"
+pgrep -fl "wdavdaemon|Microsoft Defender" 2>/dev/null \
+  || echo "(no Defender processes running)"
+echo -e "\n### Defender launchd services registered? ###"
+launchctl list 2>/dev/null | grep -iE "wdav|defender" \
+  || echo "(no wdav/Defender services in launchctl)"
+echo -e "\n### Defender system/network extension active? ###"
+systemextensionsctl list 2>/dev/null | grep -iE "wdav|defender" \
+  || echo "(no Defender system extension)"
+echo -e "\nINTERPRETATION: profile deployed but no app/daemon/process = the EDR"
+echo "protection is not actually running, even though the policy exists. App + wdavdaemon running = engine is running."
+
+echo -e "\n=== END ==="
+} > "$MDE_FILE" 2>&1
+
+# --- File 2: Managed preferences (wdav + GSA) ---
+step 2 "Managed Preferences (Defender + GSA policy)" "medium"
+MGMT_FILE="$AUDIT_DIR/02_managed_prefs_$TS.txt"
+{
+echo "=== MANAGED PREFERENCES $(date) ==="
+echo -e "\n### Defender policy (com.microsoft.wdav) ###"
+cat "/Library/Managed Preferences/com.microsoft.wdav.plist" 2>/dev/null \
+  || echo "(no wdav plist — config lives in a mobileconfig, see file 04)"
+echo -e "\n### Global Secure Access policy (com.microsoft.globalsecureaccess) ###"
+cat "/Library/Managed Preferences/com.microsoft.globalsecureaccess.plist" 2>/dev/null \
+  || echo "(no GSA plist in Managed Preferences)"
+echo -e "\n### GSA via defaults read (fallback) ###"
+defaults read "/Library/Managed Preferences/com.microsoft.globalsecureaccess" 2>/dev/null \
+  || echo "(defaults read returned nothing)"
+echo -e "\n### All GSA-related files under /Library ###"
+find /Library -iname "*globalsecure*" -maxdepth 4 2>/dev/null
+echo -e "\n### All managed preferences files ###"
+ls -la "/Library/Managed Preferences/" 2>/dev/null
+echo -e "\n=== END ==="
+} > "$MGMT_FILE" 2>&1
+
+# --- File 3: TCC / Full Disk Access ---
+step 3 "TCC — Full Disk Access, screen, input, camera/mic" "short"
+TCC_FILE="$AUDIT_DIR/03_full_disk_access_$TS.txt"
+{
+echo "=== FULL DISK ACCESS / TCC $(date) ==="
+SYS_TCC="/Library/Application Support/com.apple.TCC/TCC.db"
+USER_TCC="$USER_HOME/Library/Application Support/com.apple.TCC/TCC.db"
+SENS="('kTCCServiceScreenCapture','kTCCServiceAccessibility','kTCCServiceListenEvent','kTCCServicePostEvent','kTCCServiceSystemPolicyAllFiles','kTCCServiceAppleEvents','kTCCServiceCamera','kTCCServiceMicrophone')"
+
+echo -e "\n### Sensitive permissions — system TCC (auth_value 2=allow, 0=deny) ###"
+echo "(ScreenCapture=screen recording, Accessibility=read/control everything on screen,"
+echo " ListenEvent=keystrokes, PostEvent=synthesize input, AllFiles=full disk,"
+echo " AppleEvents=automate other apps, Camera/Microphone=camera/microphone)"
+sqlite3 "$SYS_TCC" \
+  "SELECT service, client, auth_value FROM access WHERE service IN $SENS ORDER BY service;" 2>/dev/null \
+  || echo "(could not read system TCC.db)"
+
+echo -e "\n### Same sensitive permissions — the user's own TCC ###"
+echo "(user-granted grants, e.g. an app that was given screen or input access)"
+sqlite3 "$USER_TCC" \
+  "SELECT service, client, auth_value FROM access WHERE service IN $SENS ORDER BY service;" 2>/dev/null \
+  || echo "(no readable user TCC.db: $USER_TCC)"
+
+echo -e "\n### All grants in system TCC (complete picture) ###"
+sqlite3 "$SYS_TCC" "SELECT service, client, auth_value FROM access ORDER BY service;" 2>/dev/null
+
+echo -e "\nNOTE: MDM-forced permissions (e.g. Defender FDA) are NOT in TCC.db."
+echo "They are pushed via a PPPC profile and show up in the XML dump (file 05)."
+echo -e "\n=== END ==="
+} > "$TCC_FILE" 2>&1
+
+# --- File 4: Profiles, readable summary ---
+step 4 "MDM enrollment + Intune profiles (summary)" "medium"
+PROF_FILE="$AUDIT_DIR/04_profiles_summary_$TS.txt"
+{
+echo "=== INTUNE PROFILES (summary) $(date) ==="
+echo -e "### MDM enrollment status (what the machine reports about itself) ###"
+profiles status -type enrollment 2>/dev/null || echo "(profiles status returned nothing)"
+echo -e "\n### Installed profiles ###"
+profiles show -all 2>/dev/null
+echo -e "\n=== END ==="
+} > "$PROF_FILE" 2>&1
+
+# --- File 5: Profiles, full XML (PPPC/TCC scope) ---
+step 5 "Profiles — full XML (PPPC/TCC scope)" "medium"
+XML_FILE="$AUDIT_DIR/05_profiles_full_$TS.xml"
+profiles show -all -output stdout-xml > "$XML_FILE" 2>&1
+
+# --- File 6: GSA tunnel status (is it running for real right now?) ---
+step 6 "Global Secure Access — tunnel, started & signed in?" "medium"
+GSA_FILE="$AUDIT_DIR/06_gsa_tunnel_$TS.txt"
+{
+echo "=== GLOBAL SECURE ACCESS — TUNNEL STATUS $(date) ==="
+echo -e "\n### Is the client app installed? ###"
+ls -la "/Applications/GlobalSecureAccessClient/Global Secure Access Client.app" 2>/dev/null \
+  || ls -la "/Applications/Global Secure Access Client.app" 2>/dev/null \
+  || echo "(GSA app not found in /Applications)"
+echo -e "\n### Is the process running? ###"
+pgrep -fl "Global Secure Access" 2>/dev/null || echo "(no GSA process running)"
+echo -e "\n### Network extension activated? ###"
+systemextensionsctl list 2>/dev/null | grep -i "microsoft\|globalsecure" \
+  || echo "(no MS system extension listed)"
+echo -e "\n### Active tunnel interfaces (utun) — look for a routable inet address ###"
+ifconfig | grep -A4 "^utun" 2>/dev/null
+echo -e "\n### VPN/NC services ###"
+scutil --nc list 2>/dev/null
+echo -e "\n### Is the client started and signed in? (user container) ###"
+echo "(The log directory and policy.json under the user's container are created only"
+echo " when the client is started and signed in — if they exist it is in operation.)"
+GSA_USER_LOGS="$USER_HOME/Library/Containers/com.microsoft.globalsecureaccess/Data/Library/Logs"
+if [ -d "$GSA_USER_LOGS" ]; then
+  echo "User container logs exist: $GSA_USER_LOGS"
+  # The client log name has an ISO date, so a lexical sort = chronological (avoids the
+  # stat hang). Match the prefix so diagnostic files (ifconfig_logs.log etc.) are not picked.
+  ULATEST="$(ls -1 "$GSA_USER_LOGS"/com.microsoft.globalsecureaccess*.log 2>/dev/null | sort | tail -1)"
+  [ -z "$ULATEST" ] && ULATEST="$(ls -1 "$GSA_USER_LOGS"/*.log 2>/dev/null | sort | tail -1)"
+  echo "Latest user log: ${ULATEST:-(no .log)}"
+  if [ -f "$GSA_USER_LOGS/policy.json" ]; then
+    echo "policy.json exists — forwarding profile fetched, the client is signed in."
+  else
+    echo "(no policy.json — profile not fetched, the client may not be signed in)"
+  fi
+  echo "--- sign-in/connection lines (last 30) ---"
+  grep -iaE "sign[- ]?in|signed in|logged in|account|authenticat|token|connected|tunnel up|registered|policy applied" \
+    "$ULATEST" 2>/dev/null | tail -30 || echo "(no matching lines)"
+else
+  echo "(no user container log directory for $TARGET_USER — the client is probably not started/signed in)"
+fi
+echo -e "\n=== END ==="
+} > "$GSA_FILE" 2>&1
+
+# --- File 7: GSA forwarding profile, logs, TLS inspection, route table ---
+# This is what was missing last time: the tunnel was up but we did not know
+# WHETHER it captured anything, WHAT it captured, or whether TLS was broken open.
+step 7 "GSA forwarding profile, logs, TLS, routes" "long"
+GSA2_FILE="$AUDIT_DIR/07_gsa_config_tls_$TS.txt"
+{
+echo "=== GSA FORWARDING PROFILE + TLS INSPECTION $(date) ==="
+
+echo -e "\n### A. The forwarding profile — what is actually tunneled? ###"
+echo "(GSA caches its forwarding profile locally. Empty/missing = a client with no rules.)"
+FP_FOUND=0
+for d in \
+  "/Library/Application Support/Microsoft/GlobalSecureAccess" \
+  "/Library/Application Support/com.microsoft.globalsecureaccess" \
+  "$USER_HOME/Library/Group Containers"/*globalsecure* \
+  "$USER_HOME/Library/Application Support/Microsoft/GlobalSecureAccess" \
+  "$USER_HOME/Library/Containers/com.microsoft.globalsecureaccess/Data/Library/Logs"; do
+  if [ -d "$d" ]; then
+    FP_FOUND=1
+    echo "--- $d ---"
+    find "$d" -type f \( -iname "*profile*" -o -iname "*forward*" -o -iname "*.json" -o -iname "*policy*" \) 2>/dev/null
+  fi
+done
+[ "$FP_FOUND" -eq 0 ] && echo "(no local GSA support directory found)"
+
+echo -e "\n### A2. The full GSA policy (policy.json) — the definitive list of what is tunneled ###"
+GSA_POLICY="$USER_HOME/Library/Containers/com.microsoft.globalsecureaccess/Data/Library/Logs/policy.json"
+if [ -f "$GSA_POLICY" ]; then
+  echo "--- $GSA_POLICY ---"
+  /usr/bin/python3 -m json.tool "$GSA_POLICY" 2>/dev/null || cat "$GSA_POLICY" 2>/dev/null
+else
+  echo "(no policy.json — the client may not be started/signed in, see file 06)"
+fi
+
+echo -e "\n### B. Contents of any profile/policy JSON (the rules that steer traffic) ###"
+find /Library "$USER_HOME/Library" -ipath "*globalsecure*" -type f \
+     \( -iname "*.json" -o -iname "*profile*" -o -iname "*policy*" \) 2>/dev/null \
+  | while read -r f; do
+      echo "--- $f ---"
+      # Pull out the lines that reveal which channels/rules are on
+      grep -iE "rule|fqdn|ipRange|port|protocol|action|channel|m365|internet|private|bypass|enabled" "$f" 2>/dev/null | head -60
+      echo ""
+    done
+
+echo -e "\n### C. GSA logs — was the forwarding profile loaded, or did it error? ###"
+for LOGDIR in \
+  "/Library/Logs/Microsoft/globalsecureaccessclient" \
+  "$USER_HOME/Library/Containers/com.microsoft.globalsecureaccess/Data/Library/Logs"; do
+  if [ -d "$LOGDIR" ]; then
+    echo "--- log directory: $LOGDIR ---"
+    # The client log name has an ISO date, lexical sort = chronological (avoids the
+    # stat hang). Prefix match so diagnostic files are not picked; fallback to all .log.
+    LATEST="$(ls -1 "$LOGDIR"/com.microsoft.globalsecureaccess*.log 2>/dev/null | sort | tail -1)"
+    [ -z "$LATEST" ] && LATEST="$(ls -1 "$LOGDIR"/*.log 2>/dev/null | sort | tail -1)"
+    echo "Latest log: ${LATEST:-(no .log)}"
+    echo "--- profile/policy/channel/error lines (last 80) ---"
+    grep -iaE "forwarding|profile|policy|channel|tenant|enroll|error|fail|denied|fetch|download" \
+      "$LATEST" 2>/dev/null | tail -80
+  else
+    echo "(no log directory: $LOGDIR)"
+  fi
+done
+
+echo -e "\n### D. Which utun interfaces actually carry traffic? (auto-detection) ###"
+echo "(All utun interfaces are listed with address and number of routes pointing to them."
+echo " An interface with routes beyond its own link = a tunnel that really captures traffic,"
+echo " and it is found without knowing the address in advance. GSA_TUN_* is only used"
+echo " as extra confirmation if the address happens to match.)"
+UTUNS="$(ifconfig -l 2>/dev/null | tr ' ' '\n' | grep '^utun')"
+[ -z "$UTUNS" ] && echo "(no utun interfaces at all)"
+printf '%s\n' "$UTUNS" | while read -r u; do
+  [ -z "$u" ] && continue
+  echo "--- $u ---"
+  ADDRS="$(ifconfig "$u" 2>/dev/null | grep -E 'inet |inet6 ' | grep -v 'inet6 fe80')"
+  if [ -n "$ADDRS" ]; then
+    printf '%s\n' "$ADDRS" | sed 's/^[[:space:]]*/  /'
+  else
+    echo "  (only link-local / no routable address)"
+  fi
+  printf '%s\n' "$ADDRS" | grep -qE "inet ${GSA_TUN_V4}( |$)|inet6 ${GSA_TUN_V6}( |$)" \
+    && echo "  >> matches the configured GSA address ($GSA_TUN_V4 / $GSA_TUN_V6)"
+  # Routes whose Netif column is exactly this interface (tolerates Expire column present/absent)
+  R4="$(netstat -rn -f inet  2>/dev/null | awk -v ifc="$u" '{for(i=1;i<=NF;i++) if($i==ifc){print;break}}')"
+  R6="$(netstat -rn -f inet6 2>/dev/null | awk -v ifc="$u" '{for(i=1;i<=NF;i++) if($i==ifc){print;break}}')"
+  N4="$(printf '%s' "$R4" | grep -c .)"
+  N6="$(printf '%s' "$R6" | grep -c .)"
+  echo "  routes via $u: $N4 IPv4, $N6 IPv6"
+  [ "$N4" -gt 0 ] && printf '%s\n' "$R4" | head -20 | sed 's/^/    /'
+  [ "$N6" -gt 0 ] && printf '%s\n' "$R6" | head -20 | sed 's/^/    /'
+  netstat -rn -f inet  2>/dev/null | awk -v ifc="$u" '$1=="default"{for(i=1;i<=NF;i++) if($i==ifc){print "  *** default route (IPv4) goes through "ifc" — full tunnel ***";break}}'
+  netstat -rn -f inet6 2>/dev/null | awk -v ifc="$u" '$1=="default"{for(i=1;i<=NF;i++) if($i==ifc){print "  *** default route (IPv6) goes through "ifc" — full tunnel ***";break}}'
+done
+echo "--- default route overall (where does normal outbound traffic go?) ---"
+netstat -rn -f inet 2>/dev/null | awk '$1=="default"{print}'
+
+echo -e "\n### E. TLS inspection — is the encryption broken open? ###"
+echo "(Decides whether only the domain is visible, or page content too. Looks for"
+echo " a non-Apple root CA in the system keychain — a MITM cert stands out.)"
+TLS_PAT="microsoft|secure access|proxy|inspect|tls"
+[ -n "$ORG_NAME" ] && TLS_PAT="$TLS_PAT|$ORG_NAME"
+security dump-trust-settings -d 2>/dev/null | grep -iE "$TLS_PAT" \
+  || echo "(no obvious inspection CA in admin trust)"
+echo "--- All non-Apple root CAs (review whether any looks like a proxy/MITM CA) ---"
+security find-certificate -a -p /Library/Keychains/System.keychain 2>/dev/null \
+  | openssl x509 -noout -subject 2>/dev/null \
+  | grep -ivE "Apple|com.apple" | head -40
+echo ""
+echo "INTERPRETATION: GSA normally does NOT do TLS inspection (it is a network-level"
+echo "SSE proxy, not a TLS-breaking gateway). If a company- or Microsoft-issued root CA"
+echo "shows up above that does not belong to device/wifi auth, THEN page content can be"
+echo "read. Otherwise: domain-level logging, not content."
+
+echo -e "\n=== END ==="
+} > "$GSA2_FILE" 2>&1
+
+# --- File 8: System hardening & integrity ---
+step 8 "System hardening (SIP, Gatekeeper, FileVault, remote)" "medium"
+HARD_FILE="$AUDIT_DIR/08_system_hardening_$TS.txt"
+{
+echo "=== SYSTEM HARDENING & INTEGRITY $(date) ==="
+
+echo -e "\n### System Integrity Protection (SIP) ###"
+csrutil status 2>/dev/null || echo "(csrutil not available)"
+
+echo -e "\n### Gatekeeper (app signing requirement) ###"
+spctl --status 2>/dev/null || echo "(spctl not available)"
+
+echo -e "\n### FileVault (disk encryption) ###"
+fdesetup status 2>/dev/null || echo "(fdesetup not available)"
+echo "--- Recovery key escrow to MDM? (searched in the profile XML, file 05) ---"
+grep -iE "FDERecoveryKeyEscrow|EscrowKeysToServer|RecoveryKey" "$XML_FILE" 2>/dev/null | head -10 \
+  || echo "(no escrow key reference in the profiles)"
+
+echo -e "\n### Firewall (application firewall) ###"
+FW=/usr/libexec/ApplicationFirewall/socketfilterfw
+"$FW" --getglobalstate 2>/dev/null
+"$FW" --getstealthmode 2>/dev/null
+"$FW" --getblockall 2>/dev/null
+
+echo -e "\n### SSH / remote login ###"
+systemsetup -getremotelogin 2>/dev/null || echo "(could not read remote login)"
+
+echo -e "\n### Remote management (ARD) / screen sharing ###"
+echo "(The first column is the PID: a number = the service is running, '-' = only registered."
+echo " These agents exist on every Mac; a number on RemoteManagement means it is running.)"
+launchctl list 2>/dev/null | grep -iE "screensharing|remotemanagement|RemoteDesktop|ARDAgent" \
+  || echo "(no screen-sharing/ARD services in launchctl)"
+ls -la "/Library/Application Support/Apple/Remote Desktop/" 2>/dev/null
+
+echo -e "\n### Bootstrap token escrowed to MDM? ###"
+profiles status -type bootstraptoken 2>/dev/null || echo "(could not read bootstrap token status)"
+
+echo -e "\nINTERPRETATION: SIP + Gatekeeper on and FileVault on is baseline hardening. Escrow of"
+echo "the FileVault key and the bootstrap token means MDM can unlock, recover and run MDM"
+echo "commands. SSH or screen sharing on are entry paths for remote access."
+echo -e "\n=== END ==="
+} > "$HARD_FILE" 2>&1
+
+# --- File 9: Other agents & network visibility ---
+step 9 "Agents, system extensions, DNS/proxy, accounts" "medium"
+AGENT_FILE="$AUDIT_DIR/09_agents_network_$TS.txt"
+{
+echo "=== OTHER AGENTS & NETWORK VISIBILITY $(date) ==="
+
+echo -e "\n### All system extensions (content filter/network from any vendor) ###"
+echo "(A content-filter or network extension can see or filter traffic.)"
+systemextensionsctl list 2>/dev/null || echo "(no system extensions)"
+
+echo -e "\n### Third-party LaunchDaemons (/Library, i.e. not Apple-shipped) ###"
+ls -1 /Library/LaunchDaemons/ 2>/dev/null || echo "(none)"
+echo -e "\n### Third-party LaunchAgents (/Library) ###"
+ls -1 /Library/LaunchAgents/ 2>/dev/null || echo "(none)"
+echo -e "\n### PrivilegedHelperTools (helper tools that run as root) ###"
+ls -la /Library/PrivilegedHelperTools/ 2>/dev/null || echo "(none)"
+
+echo -e "\n### Loaded non-Apple launchd services (running agents) ###"
+launchctl list 2>/dev/null | grep -ivE "com\.apple|^PID" | head -60 \
+  || echo "(no non-Apple services)"
+
+echo -e "\n### Known management/security apps in /Applications ###"
+ls /Applications 2>/dev/null \
+  | grep -iE "defender|intune|company portal|global secure|jamf|kandji|mosyle|crowdstrike|sentinelone|carbon black|cisco|umbrella|zscaler|netskope|cortex|tanium|qualys|nessus" \
+  || echo "(no known EDR/MDM apps in /Applications)"
+
+echo -e "\n### DNS resolver (corporate resolver = domain visibility even without a tunnel) ###"
+scutil --dns 2>/dev/null | grep -iE "nameserver|search domain|domain " | head -30 \
+  || echo "(could not read DNS config)"
+
+echo -e "\n### Proxy / PAC (system proxy = domain visibility for all traffic) ###"
+scutil --proxy 2>/dev/null
+
+echo -e "\n### /etc/hosts (custom redirects?) ###"
+grep -vE "^#|^$" /etc/hosts 2>/dev/null | grep -vE "127\.0\.0\.1|::1|broadcasthost" \
+  || echo "(no extra hosts entries)"
+echo -e "\n### Custom DNS resolvers (/etc/resolver) ###"
+ls -la /etc/resolver/ 2>/dev/null || echo "(no /etc/resolver)"
+
+echo -e "\n### Admin accounts ###"
+dscl . -read /Groups/admin GroupMembership 2>/dev/null
+echo "--- All local user accounts (non-system) ---"
+dscl . -list /Users 2>/dev/null | grep -vE "^_|^daemon$|^nobody$|^root$"
+
+echo -e "\nINTERPRETATION: a content-filter extension or a system proxy/corporate resolver"
+echo "gives domain visibility (which sites are visited) even without a GSA tunnel. Unknown"
+echo "root agents or extra admin accounts are worth reviewing."
+echo -e "\n=== END ==="
+} > "$AGENT_FILE" 2>&1
+
+# --- Redaction: scrub identifiers before the files leave the machine ---
+if [ "$REDACT" != "off" ]; then
+  CNAME="$(scutil --get ComputerName 2>/dev/null)"
+  LHOST="$(scutil --get LocalHostName 2>/dev/null)"
+  HWINFO="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null)"
+  SERIAL="$(printf '%s' "$HWINFO" | awk -F'"' '/IOPlatformSerialNumber/{print $4}')"
+  HWUUID="$(printf '%s' "$HWINFO" | awk -F'"' '/IOPlatformUUID/{print $4}')"
+  # Literal terms to scrub, one per line: derived host identifiers + the user's own
+  # terms (positional args, each preserved as-is; REDACT env split on commas only so
+  # multi-word terms like "Project X" survive). Trim, drop empties, dedupe.
+  LIT_JOINED="$(
+    { printf '%s\n' "$TARGET_USER" "$CNAME" "$LHOST" "$SERIAL" "$HWUUID" "$@"
+      [ "$REDACT" != "on" ] && printf '%s' "$REDACT" | tr ',' '\n'
+    } | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u
+  )"
+  export LIT_JOINED
+  # One perl process over all files so the GUID map is shared: the same GUID becomes
+  # the same [GUID-N] everywhere (cross-file correlation preserved), distinct GUIDs
+  # get distinct numbers. The %g hash persists across files within the one process.
+  perl -i -pe '
+    BEGIN { @lits = grep { length } split /\n/, $ENV{LIT_JOINED}; }
+    # Pattern-based first (clean tokens), then literal terms for the rest.
+    s/[A-Za-z0-9._%+-]+\@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[EMAIL]/g;
+    s/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/ $g{lc $&} ||= "[GUID-".(++$gc)."]" /ge;
+    s/\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/[MAC]/g;
+    for my $t (@lits) { s/\Q$t\E/[REDACTED]/gi; }
+  ' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null
+  echo "==> Redacted username, hostname, serial, hardware UUID, emails, GUIDs and MAC addresses." >&2
+
+  # Verification: report what was masked, then scan for anything that still looks
+  # like an identifier (pattern miss) or a known literal term (a file the pass missed).
+  ME="$(grep -hoE '\[EMAIL\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | wc -l | tr -d ' ')"
+  MG="$(grep -hoE '\[GUID-[0-9]+\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | sort -u | wc -l | tr -d ' ')"
+  MM="$(grep -hoE '\[MAC\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | wc -l | tr -d ' ')"
+  MT="$(grep -hoE '\[REDACTED\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | wc -l | tr -d ' ')"
+  echo "==> Masked: $ME emails, $MG distinct GUIDs, $MM MAC addresses, $MT literal-term hits." >&2
+  RESID="$(
+    { grep -nIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
+      grep -nIoE '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
+      grep -nIoE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
+      printf '%s\n' "$LIT_JOINED" | while IFS= read -r t; do
+        [ -n "$t" ] && grep -nIoiF -- "$t" "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
+      done
+    } 2>/dev/null
+  )"
+  if [ -n "$RESID" ]; then
+    echo "==> WARNING: these still look like identifiers — review before uploading:" >&2
+    printf '%s\n' "$RESID" | head -40 | sed 's/^/    /' >&2
+  else
+    echo "==> Verification: no raw emails, GUIDs, MACs or known terms left in the output." >&2
+  fi
+else
+  echo "==> Redaction OFF (REDACT=off) — files contain raw identifiers." >&2
+fi
+
+# --- Provide the analysis prompt next to the data ---
+# The prompt lives in whats_up_prompt.md next to this script (easy to edit on its own).
+# Copy it into the audit folder; if the script was run detached from the repo, write
+# a short pointer instead so the run still tells the user where to get it.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+SRC_PROMPT="$SCRIPT_DIR/whats_up_prompt.md"
+PROMPT_FILE="$AUDIT_DIR/whats_up_prompt.md"
+if [ -f "$SRC_PROMPT" ]; then
+  cp "$SRC_PROMPT" "$PROMPT_FILE"
+else
+  printf '%s\n' \
+    "# Audit analysis prompt" "" \
+    "The full prompt ships as whats_up_prompt.md next to whats_up_bigbro.sh in the" \
+    "little-brother repo, but it was not found there (the script was run detached" \
+    "from the repo). Get whats_up_prompt.md from the repo and paste it into Claude" \
+    "together with the nine audit files in this folder." > "$PROMPT_FILE"
+fi
+
+# Make everything readable for your normal user (otherwise root owns the files)
+chown -R "$SUDO_USER" "$AUDIT_ROOT" 2>/dev/null
+echo "==> All $TOTAL_STEPS steps done in ${SECONDS}s." >&2
+
+# --- Instructions ---
+cat <<EOF
+
+============================================================
+ DONE (in ${SECONDS}s). Files written to: $AUDIT_DIR
+============================================================
+
+ 01_mde_health_$TS.txt        MDE status, definitions, whether the engine runs
+ 02_managed_prefs_$TS.txt     Defender + GSA config (plist)
+ 03_full_disk_access_$TS.txt  TCC: FDA, screen, input, camera/mic (system + user)
+ 04_profiles_summary_$TS.txt  MDM enrollment + Intune profiles (readable)
+ 05_profiles_full_$TS.xml     Full profile XML (PPPC/TCC scope)
+ 06_gsa_tunnel_$TS.txt        GSA — is the tunnel running for real right now
+ 07_gsa_config_tls_$TS.txt    GSA forwarding profile, logs, TLS inspection, routes
+ 08_system_hardening_$TS.txt  SIP, Gatekeeper, FileVault+escrow, firewall, remote access
+ 09_agents_network_$TS.txt    System extensions, agents, DNS/proxy, admin accounts
+
+------------------------------------------------------------
+ UPLOAD THESE TO CLAUDE (recommended model: Claude Opus 4.8):
+------------------------------------------------------------
+ All nine files in $AUDIT_DIR
+
+ (Shortcut: in Finder, press Cmd+Shift+G and paste:
+  $AUDIT_DIR )
+
+ Why Opus 4.8: the analysis requires the model to read nine files
+ at once, weigh them together and make a security assessment in plain
+ language. It is a reasoning-heavy task, not a lookup. Opus 4.8 is the
+ most capable model for that kind of synthesis and judgment, and its
+ large context window takes all the files without trouble.
+
+------------------------------------------------------------
+ THE PROMPT (already written to a file for you):
+------------------------------------------------------------
+ $PROMPT_FILE
+
+ Open it, copy everything, and paste it into Claude together with the
+ nine files above. It asks for a neutral, plain-language Markdown report
+ (with Mermaid diagrams) covering three parts: what the employer can see,
+ the zero trust posture, and how to protect private secrets.
+============================================================
+
+ Note: identifiers are redacted by default (username, hostname, serial,
+ hardware UUID, emails, GUIDs, MAC addresses). Add company/project names
+ with REDACT=... or as arguments; disable with REDACT=off. Still skim the
+ files before uploading — redaction is best-effort, not a guarantee.
+
+ Tip: the files describe your machine in detail. Delete them once you
+ have uploaded them and are done:  rm -rf "$AUDIT_DIR"
+============================================================
+
+EOF
