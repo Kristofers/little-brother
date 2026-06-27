@@ -1,26 +1,37 @@
 # little-brother
 
-A single bash script, [`whats_up_bigbro.sh`](whats_up_bigbro.sh), that maps what an employer can actually see and do on an Intune/MDM-managed macOS machine.
+[![read-only guard](https://github.com/Kristofers/little-brother/actions/workflows/readonly-guard.yml/badge.svg)](https://github.com/Kristofers/little-brother/actions/workflows/readonly-guard.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-The script is **read-only**. It reads local status and writes nine files, it changes nothing on the machine. The idea is to upload the result to Claude and get it explained in plain language, plus an assessment of what should be monitored and how a person can keep their own personal data off a work machine.
+A single bash script, [`whats_up_bigbro.sh`](whats_up_bigbro.sh), that audits an Intune/MDM-managed macOS machine like a security review and maps what an employer can actually see on it.
+
+It serves two goals, weighted equally:
+
+- **Security.** Like inviting a security expert to look over the managed Mac, it surfaces what is protected, what is monitored, and the gaps to close. The report recommends what should be monitored under zero trust and flags protections that are deployed but not actually running (for example a Defender profile present while the engine is not running). That helps the employer and the security owner, it does not work against them.
+- **Privacy.** Keep genuinely personal data — a personal password manager, personal notes — off the work machine, and understand what is visible. Work data and work activity remain the employer's to monitor.
+
+The point is finding the right balance between the two. The script is **read-only**: it reads local status and writes nine files, it changes nothing on the machine. Upload the result to Claude and get back a plain-language report that answers two sets of questions at once, held in balance:
+
+- **For a security owner:** Is what we deployed actually running, or only present as a profile? Is Defender's engine live, is the GSA tunnel carrying traffic, is FileVault escrowed? What is reasonable under zero trust, and what is missing to catch a compromised machine or protect company IP?
+- **For an individual:** How do I keep my *personal* data off a work machine, and what can the employer see in the meantime — files, domains, page content? Is everything monitored, or only work traffic?
 
 ## Scope and ethics
 
-This is a transparency and personal-privacy tool. It helps a person understand what their employer can see on a managed Mac, and how to keep their *personal* data (a personal password manager, personal notes) off that machine. It is read-only and changes nothing.
+This is a security-audit and personal-privacy tool, weighted equally toward both. On the security side it helps the employer or security owner see what is protected, what is monitored, and what should be monitored under zero trust, including protections that are deployed but not actually running. It works *for* the security owner, not against them. On the privacy side it helps a person understand what is visible and keep their genuinely *personal* data (a personal password manager, personal notes) off a work machine. It is read-only and changes nothing.
 
-It is explicitly **not** for evading security controls, disabling monitoring, hiding misconduct, or tampering with a managed device — and it cannot do any of those things, because it only reads. Work data and work activity remain the employer's to monitor. The honest-employee premise is the whole point: help detect a compromised machine, and respect the person's private life.
+It is explicitly **not** for evading security controls, disabling monitoring, hiding misconduct, or tampering with a managed device — and it cannot do any of those things, because it only reads. Work data and work activity remain the employer's to monitor. The honest-employee premise serves both goals at once: build controls that catch a compromised machine, and respect the person's private life.
 
 ## Why
 
-On a work machine you rarely know what the employer actually sees. Is it only which domains you browse, or the page content too? Do they read files? Is all traffic tunneled, or only work traffic? This script collects the actual settings so the question can be answered with data instead of guesses.
+On a work machine you rarely know two things: whether the deployed controls are actually working, and what the employer actually sees. Is the Defender profile that was pushed backed by a running engine? Is all traffic tunneled, or only work traffic? Is TLS being inspected, and is it only which domains get browsed or the page content too? Are files readable? This script collects the actual settings so both can be answered with data instead of guesses, and so each gap can be named and closed.
 
-The philosophy is zero trust with privacy: assume employees are honest, so the company should be able to detect a compromised machine but not snoop on private activity.
+The philosophy is zero trust with privacy: assume employees are honest, so the company should be able to detect a compromised machine but not monitor private activity. The same honest-employee, detect-the-attacker premise drives both halves of the report — the security gaps the owner should close, and the personal data the individual should keep off the machine.
 
 ## Principles — no security or privacy by obscurity
 
 The intent of this tool is fully open, and that is the point. It is a single readable script that only reads the machine and changes nothing, and the read-only rule is **enforced** in CI ([`tools/readonly-guard.py`](tools/readonly-guard.py)), not asserted on trust. Run it, read it, check it.
 
-The redaction exists for one reason: to protect the operator's **own** identifiers before the output is shared with a third party. It never hides what the tool collects or does — every collection step is documented here and visible in the source. Security and privacy come from clear, inspectable policy and code, not from hiding things under the hood.
+The redaction exists for one reason: to scrub your **own** identifiers out of the files before you upload them. It never hides what the tool collects or does — every collection step is documented here and visible in the source. Security and privacy come from clear, inspectable policy and code, not from hiding things under the hood.
 
 ## Running
 
@@ -50,7 +61,7 @@ Wherever they land: the files describe your machine in detail. Delete them once 
 
 The script auto-detects which `utun` interface actually carries traffic by looking at the route table, so normally you do not need to set anything.
 
-Pass your **organisation/sensitive terms** (company name, project names) as arguments. They are used openly in two places: file 7 searches the system root CAs for them — to spot a company TLS-inspection CA — and the redaction pass scrubs them from every result file.
+Pass your **organisation/sensitive terms** (company name, project names) as arguments. They are used openly in two places: file 7 searches the system root CAs for them — so both the security owner and the user can see whether a company TLS-inspection CA is in place — and the redaction pass scrubs them from every result file.
 
 ```bash
 sudo bash whats_up_bigbro.sh acme "Project Falcon"
@@ -65,7 +76,7 @@ Two optional environment variables exist for edge cases:
 
 ## Redaction
 
-The result files leave the machine (you upload them), so by default they are scrubbed of identifiers before you do. Automatically masked: username and home path, computer name and local hostname, hardware serial and UUID, email/UPN addresses, GUIDs (tenant/org/device/profile IDs) and MAC addresses. RFC1918 local IPs are deliberately kept, since masking them would gut the tunnel and route output.
+The result files leave the machine when you upload them, so by default they are scrubbed of *your own* identifiers first. This protects the operator before sharing with a third party; it never hides what the tool collects. Automatically masked: username and home path, computer name and local hostname, hardware serial and UUID, email/UPN addresses, GUIDs (tenant/org/device/profile IDs) and MAC addresses. RFC1918 local IPs are deliberately kept, since masking them would gut the tunnel and route output.
 
 GUIDs are mapped to distinct placeholders (`[GUID-1]`, `[GUID-2]`, ...) consistently across all files, so the same id reads the same everywhere and correlation is preserved without exposing the real value.
 
@@ -88,7 +99,7 @@ The run ends with two lines on the terminal that let you confirm it worked:
 
 The first line shows what was caught (a count of zero where you expected hits is itself a signal — e.g. `0 literal-term hits` means your company name never appeared, or was misspelled in `REDACT`). The second line is a self-check: the script re-scans the masked files for anything that still looks like an email, GUID or MAC, or matches one of your literal terms. If something slipped through it prints `WARNING:` with the `file:line` of each leftover so you can look before uploading.
 
-Beyond the built-in check, spot-check by hand in the audit folder — this is the most reliable way to confirm the things *you* care about are gone. Run these one at a time (avoid trailing `# comments` — interactive zsh on macOS does not treat `#` as a comment and will pass it to the command).
+Beyond the built-in check, spot-check by hand in the audit folder — this is the most reliable way to confirm the identifiers you care about are gone. Run these one at a time (avoid trailing `# comments` — interactive zsh on macOS does not treat `#` as a comment and will pass it to the command).
 
 Anything that still looks like an email / GUID / MAC:
 
@@ -117,9 +128,9 @@ Files 06 and 07 (GSA tunnel and config) are the richest in identifiers — accou
 
 ## What is collected
 
-Nine files, one per monitoring surface:
+Nine files, one per monitoring surface. Several of them are where the security gaps show up — a profile present but the engine not running, a protection that should be on and is not:
 
-1. `01_mde_health` — Microsoft Defender (MDE): real-time protection, cloud/telemetry, sample submission, exclusions, definition freshness, and whether Defender is actually installed and running (app, daemon, launchd service, system extension) independent of the CLI binary.
+1. `01_mde_health` — Microsoft Defender (MDE): real-time protection, cloud/telemetry, sample submission, exclusions, definition freshness, and whether Defender is actually installed and running (app, daemon, launchd service, system extension) independent of the CLI binary. This is where a deployed-but-inert Defender shows up.
 2. `02_managed_prefs` — Defender and Global Secure Access policy from `/Library/Managed Preferences/`.
 3. `03_full_disk_access` — TCC, both system and user: Full Disk Access plus the monitoring-sensitive permissions (screen recording, Accessibility, input monitoring, camera/microphone). Note: MDM-forced permissions do not show here but in the profile XML (file 5).
 4. `04_profiles_summary` — MDM enrollment status and Intune profiles, readable summary.
@@ -136,10 +147,10 @@ Upload all nine files to Claude. **Recommended model: Claude Opus 4.8.** The ana
 The prompt lives in [`whats_up_prompt.md`](whats_up_prompt.md) in the repo (edit it there). At runtime the script copies it into the audit folder and points to it at the end of the run. Open it, copy everything, and paste it into Claude together with the nine files. It asks for a factual, neutral report, written impersonally (no "you") and without value-laden phrasing, that works for several roles at once: developers, a tech and IP lead, a CISO and an infrastructure manager. Every conclusion is illustrated with concrete everyday examples so it can be compared against one's own behavior. The report is written in Markdown and may use Mermaid diagrams to show flows, e.g. how traffic is routed or where the boundary of visibility lies. The report covers three parts:
 
 1. **What the employer can see today** and the consequences in practice (files, browsing, work vs private). Mostly for users and developers.
-2. **The security posture under zero trust** — what is reasonable, what goes further than necessary, and what is missing to catch a compromised machine or protect IP. Mostly for CISO and infrastructure.
-3. **How a user protects private secrets**, with a password manager (e.g. Bitwarden) and private notes (e.g. Apple Notes) as examples, so that Defender, GSA, any TLS inspection and Full Disk Access cannot reach the content. Mostly for users and developers.
+2. **The security posture under zero trust** — what is reasonable, what goes further than necessary, and what is missing to catch a compromised machine or protect IP. This is the gaps-and-fixes part: it flags any protective component that is deployed but not active. Mostly for CISO and infrastructure.
+3. **How a user keeps personal data private** — practical advice for keeping genuinely personal data off the monitored surfaces in the first place, with a personal password manager (e.g. Bitwarden) and personal notes (e.g. Apple Notes) as examples, and the simplest option of keeping personal accounts on a personal device instead. This is about a person's own private data, not about hiding work activity, which remains the employer's to monitor. Mostly for users and developers.
 
-## Security and scope
+## Caveats
 
 - The script only reads, it writes nothing to the system and does not touch policy, profiles or the keychain.
 - The result files can contain sensitive information about your machine and environment. Do not check them in, and consider where you upload them.
