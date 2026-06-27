@@ -2,7 +2,13 @@
 
 A single bash script, [`whats_up_bigbro.sh`](whats_up_bigbro.sh), that maps what an employer can actually see and do on an Intune/MDM-managed macOS machine.
 
-The script is **read-only**. It reads local status and writes nine files, it changes nothing on the machine. The idea is to upload the result to Claude and get it explained in plain language, plus an assessment of what should be monitored and how a user protects their own secrets.
+The script is **read-only**. It reads local status and writes nine files, it changes nothing on the machine. The idea is to upload the result to Claude and get it explained in plain language, plus an assessment of what should be monitored and how a person can keep their own personal data off a work machine.
+
+## Scope and ethics
+
+This is a transparency and personal-privacy tool. It helps a person understand what their employer can see on a managed Mac, and how to keep their *personal* data (a personal password manager, personal notes) off that machine. It is read-only and changes nothing.
+
+It is explicitly **not** for evading security controls, disabling monitoring, hiding misconduct, or tampering with a managed device — and it cannot do any of those things, because it only reads. Work data and work activity remain the employer's to monitor. The honest-employee premise is the whole point: help detect a compromised machine, and respect the person's private life.
 
 ## Why
 
