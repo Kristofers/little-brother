@@ -27,10 +27,23 @@
 # asserted on trust.
 #
 # Run with: sudo bash whats_up_bigbro.sh [term ...]
+#   Root is required (most of what it reads needs it); it fails early otherwise.
 #   Positional arguments are sensitive/organisation terms (company name, project names).
 #   They are used openly in two places: file 07 searches the system root CAs for them
 #   (to spot a company TLS-inspection CA), and the redaction pass scrubs them from every
-#   result file. Disable the redaction pass with REDACT=off.
+#   result file. They are the one identifier class the script cannot derive, so with no
+#   terms it warns that the company name and codenames stay in cleartext; set
+#   ALLOW_NO_TERMS=1 to silence that on a personal machine. Disable redaction with REDACT=off.
+
+# --- Require root ---
+# Most of what this audits (system TCC.db, Managed Preferences, GSA logs) is only
+# readable as root. Without it the privileged reads fall back to "(could not read ...)"
+# and the run finishes with a confident but mostly empty result. Fail early instead.
+if [ "$(id -u)" -ne 0 ]; then
+  echo "This audit must run as root so it can read the system TCC.db, Managed" >&2
+  echo "Preferences and the GSA logs. Re-run with: sudo bash $0 [term ...]" >&2
+  exit 1
+fi
 
 # --- Configuration (optional) ---
 # File 7 auto-detects which utun interface actually carries traffic via the route table,
@@ -40,11 +53,31 @@ GSA_TUN_V4="${GSA_TUN_V4:-10.10.10.10}"
 GSA_TUN_V6="${GSA_TUN_V6:-fd00::1}"
 
 # Sensitive/organisation terms passed as arguments (company name, project names, ...).
-# Used openly in two places: the file 07 root-CA grep and the redaction pass.
+# Used openly in two places: the file 07 root-CA grep and the redaction pass. They are
+# the one class of identifier the script cannot derive on its own, so omitting them leaves
+# the company name, internal domains and codenames in cleartext in the result files.
 TERMS=("$@")
 
 # Redaction of the result files is on by default; disable with REDACT=off.
+# REDACT only takes on/off — organisation terms are passed as arguments, never via REDACT.
 REDACT="${REDACT:-on}"
+
+# With no terms the derived host identifiers, emails, GUIDs and MACs are still scrubbed,
+# but the company name, internal domains and project/codenames are not (they cannot be
+# derived). Warn loudly before the run; ALLOW_NO_TERMS=1 silences it for a personal
+# machine with nothing org-specific to redact.
+ALLOW_NO_TERMS="${ALLOW_NO_TERMS:-0}"
+if [ "${#TERMS[@]}" -eq 0 ] && [ "$REDACT" != "off" ] && [ "$ALLOW_NO_TERMS" != "1" ]; then
+  {
+    echo "WARNING: no organisation terms given."
+    echo "  Host identifiers, emails, GUIDs and MACs are still redacted, but the company"
+    echo "  name, internal domains and project/codenames are NOT — they cannot be derived."
+    echo "  They can appear in cleartext in profile names (files 04/05), GSA forwarding"
+    echo "  rules (file 07) and root CA subjects (file 07)."
+    echo "  Re-run with your terms, e.g.:  sudo bash $0 acme \"Project Falcon\""
+    echo "  For a personal machine with nothing org-specific to redact, set ALLOW_NO_TERMS=1."
+  } >&2
+fi
 
 # The logged-in user's home directory. Under sudo $HOME is often root's directory,
 # so the real user's home is resolved via dscl. Used for user-level directories
@@ -59,8 +92,14 @@ USER_HOME="$(dscl . -read /Users/"$TARGET_USER" NFSHomeDirectory 2>/dev/null | a
 AUDIT_ROOT="${AUDIT_ROOT:-$USER_HOME/bigbro_audit}"
 TS="$(date +%Y%m%d_%H%M)"
 AUDIT_DIR="$AUDIT_ROOT/audit_$TS"   # one subfolder per run
+# Only touch permissions/ownership on what this run creates. If AUDIT_ROOT was pointed at
+# an existing directory, do not chmod/chown the operator's tree — only the per-run subdir
+# (which we just created) is tightened. The 700 on AUDIT_DIR keeps the files private even
+# if the parent is more open. AUDIT_ROOT should be a dedicated or non-existent path.
+[ -d "$AUDIT_ROOT" ] && ROOT_PREEXISTED=1 || ROOT_PREEXISTED=0
 mkdir -p "$AUDIT_DIR"
-chmod 700 "$AUDIT_ROOT" "$AUDIT_DIR" 2>/dev/null   # only your user should be able to read it
+chmod 700 "$AUDIT_DIR" 2>/dev/null                                  # only your user can read it
+[ "$ROOT_PREEXISTED" -eq 0 ] && chmod 700 "$AUDIT_ROOT" 2>/dev/null
 
 # Find the mdatp binary (not always in the sudo PATH)
 MDATP=""
@@ -320,16 +359,28 @@ printf '%s\n' "$UTUNS" | while read -r u; do
   fi
   printf '%s\n' "$ADDRS" | grep -qE "inet ${GSA_TUN_V4}( |$)|inet6 ${GSA_TUN_V6}( |$)" \
     && echo "  >> matches the configured GSA address ($GSA_TUN_V4 / $GSA_TUN_V6)"
-  # Routes whose Netif column is exactly this interface (tolerates Expire column present/absent)
+  # Routes whose Netif column is exactly this interface (tolerates Expire column present/absent).
+  # For IPv6, macOS installs a link-local default (default via fe80::%utunN), the interface's own
+  # fe80::/64 link route and the multicast routes (ff00::/8, ff01::, ff02::) on EVERY utun, including
+  # the idle system-reserved ones that carry no traffic. Those are not "routes beyond the link", so
+  # exclude any route with a link-local/multicast field — otherwise every idle utun looks like a tunnel.
   R4="$(netstat -rn -f inet  2>/dev/null | awk -v ifc="$u" '{for(i=1;i<=NF;i++) if($i==ifc){print;break}}')"
-  R6="$(netstat -rn -f inet6 2>/dev/null | awk -v ifc="$u" '{for(i=1;i<=NF;i++) if($i==ifc){print;break}}')"
+  R6="$(netstat -rn -f inet6 2>/dev/null | awk -v ifc="$u" '
+    { hit=0; noise=0
+      for(i=1;i<=NF;i++){ if($i==ifc) hit=1; if($i ~ /^fe80/ || $i ~ /^ff0[0-9]/) noise=1 }
+      if(hit && !noise) print }')"
   N4="$(printf '%s' "$R4" | grep -c .)"
   N6="$(printf '%s' "$R6" | grep -c .)"
-  echo "  routes via $u: $N4 IPv4, $N6 IPv6"
+  echo "  routes via $u: $N4 IPv4, $N6 IPv6 (link-local/multicast excluded)"
   [ "$N4" -gt 0 ] && printf '%s\n' "$R4" | head -20 | sed 's/^/    /'
   [ "$N6" -gt 0 ] && printf '%s\n' "$R6" | head -20 | sed 's/^/    /'
   netstat -rn -f inet  2>/dev/null | awk -v ifc="$u" '$1=="default"{for(i=1;i<=NF;i++) if($i==ifc){print "  *** default route (IPv4) goes through "ifc" — full tunnel ***";break}}'
-  netstat -rn -f inet6 2>/dev/null | awk -v ifc="$u" '$1=="default"{for(i=1;i<=NF;i++) if($i==ifc){print "  *** default route (IPv6) goes through "ifc" — full tunnel ***";break}}'
+  # Only a default route whose gateway is the interface itself (not a fe80 link-local gateway) is a
+  # real full tunnel; the link-local default macOS puts on every utun is not.
+  netstat -rn -f inet6 2>/dev/null | awk -v ifc="$u" '
+    $1=="default"{ hit=0; ll=0
+      for(i=1;i<=NF;i++){ if($i==ifc) hit=1; if($i ~ /^fe80/) ll=1 }
+      if(hit && !ll) print "  *** default route (IPv6) goes through "ifc" — full tunnel ***" }'
 done
 echo "--- default route overall (where does normal outbound traffic go?) ---"
 netstat -rn -f inet 2>/dev/null | awk '$1=="default"{print}'
@@ -337,9 +388,17 @@ netstat -rn -f inet 2>/dev/null | awk '$1=="default"{print}'
 echo -e "\n### E. TLS inspection — is the encryption broken open? ###"
 echo "(Decides whether only the domain is visible, or page content too. Looks for"
 echo " a non-Apple root CA in the system keychain — a MITM cert stands out.)"
+# Two independent searches over the same dump: a fixed ERE of known inspection markers
+# (this can never fail to compile), plus a separate fixed-string pass for the operator's
+# org terms. The terms are NOT spliced into the regex: a term with regex metacharacters
+# (e.g. "Acme (EU)") would otherwise make grep error out and the "|| echo" fallback would
+# then report a false all-clear, masking a real MITM CA.
 TLS_PAT="microsoft|secure access|proxy|inspect|tls"
-for t in "${TERMS[@]}"; do [ -n "$t" ] && TLS_PAT="$TLS_PAT|$t"; done
-security dump-trust-settings -d 2>/dev/null | grep -iE "$TLS_PAT" \
+TRUST_DUMP="$(security dump-trust-settings -d 2>/dev/null)"
+{
+  printf '%s\n' "$TRUST_DUMP" | grep -iE "$TLS_PAT"
+  for t in "${TERMS[@]}"; do [ -n "$t" ] && printf '%s\n' "$TRUST_DUMP" | grep -iF -- "$t"; done
+} | sort -u | grep . \
   || echo "(no obvious inspection CA in admin trust)"
 echo "--- All non-Apple root CAs (review whether any looks like a proxy/MITM CA) ---"
 security find-certificate -a -p /Library/Keychains/System.keychain 2>/dev/null \
@@ -454,39 +513,63 @@ if [ "$REDACT" != "off" ]; then
   HWINFO="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null)"
   SERIAL="$(printf '%s' "$HWINFO" | awk -F'"' '/IOPlatformSerialNumber/{print $4}')"
   HWUUID="$(printf '%s' "$HWINFO" | awk -F'"' '/IOPlatformUUID/{print $4}')"
-  # Literal terms to scrub, one per line: derived host identifiers + the user's own
-  # terms (the positional arguments in TERMS, each preserved as-is so multi-word terms
-  # like "Project X" survive). Trim, drop empties, dedupe.
-  LIT_JOINED="$(
-    printf '%s\n' "$TARGET_USER" "$CNAME" "$LHOST" "$SERIAL" "$HWUUID" "${TERMS[@]}" \
+  # The user's full name (the display-name form that shows up in GSA logs/policy.json and
+  # is neither email-shaped nor derivable from the short username).
+  REALNAME="$(dscl . -read /Users/"$TARGET_USER" RealName 2>/dev/null \
+    | sed 's/^RealName: *//' | tr '\n' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  # Two literal-term lists. BOUNDED = auto-derived host identifiers, matched with word
+  # boundaries so a short/generic name (a 2-3 char username, a ComputerName like "Air") does
+  # not substring-mask unrelated text or the [GUID-N]/[MAC] placeholders. GREEDY = the long,
+  # specific derived ids + the operator's own terms, matched as substrings by intent (a
+  # company name should also match inside compound tokens). The placeholder words are dropped
+  # from GREEDY so a term can never eat a placeholder. Trim, drop empties, dedupe.
+  LIT_BOUNDED="$(
+    printf '%s\n' "$TARGET_USER" "$REALNAME" "$CNAME" "$LHOST" \
       | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u
   )"
-  export LIT_JOINED
-  # One perl process over all files so the GUID map is shared: the same GUID becomes
-  # the same [GUID-N] everywhere (cross-file correlation preserved), distinct GUIDs
-  # get distinct numbers. The %g hash persists across files within the one process.
+  LIT_GREEDY="$(
+    printf '%s\n' "$SERIAL" "$HWUUID" "${TERMS[@]}" \
+      | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' \
+      | grep -viE '^(GUID|EMAIL|MAC|JWT|REDACTED)$' | sort -u
+  )"
+  export LIT_BOUNDED LIT_GREEDY
+  # One perl process over all files so the GUID map is shared: the same GUID becomes the same
+  # [GUID-N] everywhere (cross-file correlation preserved), distinct GUIDs get distinct numbers.
+  # The %g hash persists across files within the one process. Structured tokens are masked first
+  # (so an email/JWT redacts whole before any literal term touches it), then the literal terms.
   perl -i -pe '
-    BEGIN { @lits = grep { length } split /\n/, $ENV{LIT_JOINED}; }
-    # Pattern-based first (clean tokens), then literal terms for the rest.
+    BEGIN {
+      @bnd = grep { length } split /\n/, $ENV{LIT_BOUNDED};
+      @grd = grep { length } split /\n/, $ENV{LIT_GREEDY};
+    }
     s/[A-Za-z0-9._%+-]+\@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[EMAIL]/g;
-    s/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/ $g{lc $&} ||= "[GUID-".(++$gc)."]" /ge;
+    s/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+/[JWT]/g;
+    # GUIDs: dashed 8-4-4-4-12 and compact 32-hex map into the SAME table (dashes stripped in
+    # the key) so a dashed id and its compact form share one [GUID-N] across all files.
+    s/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/ (my $k = lc $&) =~ s|-||g; $g{$k} ||= "[GUID-".(++$gc)."]" /ge;
+    s/\b[0-9a-fA-F]{32}\b/ $g{lc $&} ||= "[GUID-".(++$gc)."]" /ge;
     s/\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/[MAC]/g;
-    for my $t (@lits) { s/\Q$t\E/[REDACTED]/gi; }
+    for my $t (@bnd) { s/\b\Q$t\E\b/[REDACTED]/gi; }
+    for my $t (@grd) { s/\Q$t\E/[REDACTED]/gi; }
   ' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null
-  echo "==> Redacted username, hostname, serial, hardware UUID, emails, GUIDs and MAC addresses." >&2
+  echo "==> Redacted username, full name, hostname, serial, hardware UUID, emails, JWTs, GUIDs and MAC addresses." >&2
+  [ -z "$SERIAL" ] && echo "==> Note: hardware serial lookup returned empty — any serial in the logs is not masked." >&2
+  [ -z "$HWUUID" ] && echo "==> Note: hardware UUID lookup returned empty — not masked." >&2
 
   # Verification: report what was masked, then scan for anything that still looks
   # like an identifier (pattern miss) or a known literal term (a file the pass missed).
   ME="$(grep -hoE '\[EMAIL\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | wc -l | tr -d ' ')"
+  MJ="$(grep -hoE '\[JWT\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | wc -l | tr -d ' ')"
   MG="$(grep -hoE '\[GUID-[0-9]+\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | sort -u | wc -l | tr -d ' ')"
   MM="$(grep -hoE '\[MAC\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | wc -l | tr -d ' ')"
   MT="$(grep -hoE '\[REDACTED\]' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml 2>/dev/null | wc -l | tr -d ' ')"
-  echo "==> Masked: $ME emails, $MG distinct GUIDs, $MM MAC addresses, $MT literal-term hits." >&2
+  echo "==> Masked: $ME emails, $MJ JWTs, $MG distinct GUIDs, $MM MAC addresses, $MT literal-term hits." >&2
   RESID="$(
     { grep -nIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
       grep -nIoE '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
+      grep -nIoE '\b[0-9a-fA-F]{32}\b' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
       grep -nIoE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
-      printf '%s\n' "$LIT_JOINED" | while IFS= read -r t; do
+      printf '%s\n' "$LIT_BOUNDED" "$LIT_GREEDY" | while IFS= read -r t; do
         [ -n "$t" ] && grep -nIoiF -- "$t" "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
       done
     } 2>/dev/null
@@ -495,7 +578,7 @@ if [ "$REDACT" != "off" ]; then
     echo "==> WARNING: these still look like identifiers — review before uploading:" >&2
     printf '%s\n' "$RESID" | head -40 | sed 's/^/    /' >&2
   else
-    echo "==> Verification: no raw emails, GUIDs, MACs or known terms left in the output." >&2
+    echo "==> Verification: no raw emails, JWTs, GUIDs, MACs or known terms left in the output." >&2
   fi
 else
   echo "==> Redaction OFF (REDACT=off) — files contain raw identifiers." >&2
@@ -519,8 +602,11 @@ else
     "together with the nine audit files in this folder." > "$PROMPT_FILE"
 fi
 
-# Make everything readable for your normal user (otherwise root owns the files)
-chown -R "$SUDO_USER" "$AUDIT_ROOT" 2>/dev/null
+# Make everything readable for your normal user (otherwise root owns the files). Scope this
+# to what the run created: the per-run subdir always, and AUDIT_ROOT only if we created it,
+# so pointing AUDIT_ROOT at an existing directory never recursively re-owns the operator's tree.
+chown -R "$SUDO_USER" "$AUDIT_DIR" 2>/dev/null
+[ "$ROOT_PREEXISTED" -eq 0 ] && chown "$SUDO_USER" "$AUDIT_ROOT" 2>/dev/null
 echo "==> All $TOTAL_STEPS steps done in ${SECONDS}s." >&2
 
 # --- Instructions ---
@@ -565,10 +651,14 @@ cat <<EOF
  the zero trust posture, and how to protect private secrets.
 ============================================================
 
- Note: identifiers are redacted by default (username, hostname, serial,
- hardware UUID, emails, GUIDs, MAC addresses). Add company/project names
- with REDACT=... or as arguments; disable with REDACT=off. Still skim the
- files before uploading — redaction is best-effort, not a guarantee.
+ Note: identifiers are redacted by default (username, full name, hostname,
+ serial, hardware UUID, emails, JWTs, GUIDs, MAC addresses). Company and
+ project names cannot be derived — pass them as arguments to redact them:
+ sudo bash $0 acme "Project Falcon". REDACT only takes on/off (REDACT=off
+ disables redaction entirely). IP addresses (v4 and v6) are intentionally
+ kept so the tunnel/route output stays meaningful. Still skim the files
+ before uploading — redaction is best-effort, not a guarantee, and account
+ or display names in the GSA logs (files 06/07) may need adding as terms.
 
  Tip: the files describe your machine in detail. Delete them once you
  have uploaded them and are done:  rm -rf "$AUDIT_DIR"
