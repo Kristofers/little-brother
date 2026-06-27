@@ -552,9 +552,13 @@ if [ "$REDACT" != "off" ]; then
     }
     s/[A-Za-z0-9._%+-]+\@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[EMAIL]/g;
     s/\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+/[JWT]/g;
-    # GUIDs: dashed 8-4-4-4-12 and compact 32-hex map into the SAME table (dashes stripped in
-    # the key) so a dashed id and its compact form share one [GUID-N] across all files.
-    s/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/ (my $k = lc $&) =~ s|-||g; $g{$k} ||= "[GUID-".(++$gc)."]" /ge;
+    # GUIDs: dashed 8-4-4-4-12, underscore-separated (Intune SCEP ModelName/LogicalName) and
+    # compact 32-hex all map into the SAME table (separators stripped in the key) so the same id
+    # shares one [GUID-N] across forms and files. The dashed/underscore patterns guard with hex
+    # lookarounds instead of \b: \b fails when the id is glued to a word char (e.g. AC_1de7ad45-…
+    # or LogicalName_31bda227_…), which let those SCEP ids leak through unmasked.
+    s/(?<![0-9a-fA-F-])[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![0-9a-fA-F-])/ (my $k = lc $&) =~ s|-||g; $g{$k} ||= "[GUID-".(++$gc)."]" /ge;
+    s/(?<![0-9a-fA-F])[0-9a-fA-F]{8}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{12}(?![0-9a-fA-F])/ (my $k = lc $&) =~ s|_||g; $g{$k} ||= "[GUID-".(++$gc)."]" /ge;
     s/\b[0-9a-fA-F]{32}\b/ $g{lc $&} ||= "[GUID-".(++$gc)."]" /ge;
     s/\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/[MAC]/g;
     for my $t (@bnd) { s/\b\Q$t\E\b/[REDACTED]/gi; }
@@ -575,6 +579,7 @@ if [ "$REDACT" != "off" ]; then
   RESID="$(
     { grep -nIoE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
       grep -nIoE '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
+      grep -nIoE '[0-9a-fA-F]{8}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{4}_[0-9a-fA-F]{12}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
       grep -nIoE '\b[0-9a-fA-F]{32}\b' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
       grep -nIoE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' "$AUDIT_DIR"/*.txt "$AUDIT_DIR"/*.xml
       printf '%s\n' "$LIT_BOUNDED" "$LIT_GREEDY" | while IFS= read -r t; do
