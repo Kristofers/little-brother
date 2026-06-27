@@ -478,9 +478,17 @@ launchctl list 2>/dev/null | grep -ivE "com\.apple|^PID" | head -60 \
   || echo "(no non-Apple services)"
 
 echo -e "\n### Known management/security apps in /Applications ###"
-ls /Applications 2>/dev/null \
-  | grep -iE "defender|intune|company portal|global secure|jamf|kandji|mosyle|crowdstrike|sentinelone|carbon black|cisco|umbrella|zscaler|netskope|cortex|tanium|qualys|nessus" \
-  || echo "(no known EDR/MDM apps in /Applications)"
+# Match app names against the known-vendor pattern via a glob loop (not ls | grep), so
+# names with spaces are handled cleanly. nocasematch gives the case-insensitive match.
+KNOWN_APPS="defender|intune|company portal|global secure|jamf|kandji|mosyle|crowdstrike|sentinelone|carbon black|cisco|umbrella|zscaler|netskope|cortex|tanium|qualys|nessus"
+shopt -s nullglob nocasematch
+KNOWN_FOUND=0
+for app in /Applications/*; do
+  name="${app##*/}"
+  if [[ "$name" =~ $KNOWN_APPS ]]; then echo "$name"; KNOWN_FOUND=1; fi
+done
+shopt -u nullglob nocasematch
+[ "$KNOWN_FOUND" -eq 0 ] && echo "(no known EDR/MDM apps in /Applications)"
 
 echo -e "\n### DNS resolver (corporate resolver = domain visibility even without a tunnel) ###"
 scutil --dns 2>/dev/null | grep -iE "nameserver|search domain|domain " | head -30 \

@@ -39,6 +39,8 @@ The redaction exists for one reason: to scrub your **own** identifiers out of th
 sudo bash whats_up_bigbro.sh acme "Project Falcon"
 ```
 
+Here `acme` and `"Project Falcon"` are placeholders — replace them with your own company name and project/codenames.
+
 `sudo` is required to read the system TCC.db, Managed Preferences and the GSA logs, and the script now fails early if it is not run as root (without it the privileged reads come back empty). It `chown`s the result back to your user, so the files can be opened without root afterwards.
 
 On a work machine, pass your **company name and project/codenames** as arguments. They are the one class of identifier the script cannot derive on its own, so if you omit them the company name, internal domains and codenames stay in cleartext in the result files (profile names, GSA forwarding rules, root CA subjects). With no terms the script prints a warning to that effect; on a personal machine with nothing org-specific to redact, set `ALLOW_NO_TERMS=1` to silence it.

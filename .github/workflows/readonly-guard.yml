@@ -13,7 +13,7 @@ jobs:
     name: static read-only guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Static read-only guard
         run: python3 tools/readonly-guard.py whats_up_bigbro.sh
       - name: Bash syntax
@@ -27,7 +27,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Bash syntax
         run: bash -n whats_up_bigbro.sh
       - name: Re-run the guard on macOS
