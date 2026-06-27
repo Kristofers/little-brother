@@ -154,7 +154,7 @@ The prompt lives in [`whats_up_prompt.md`](whats_up_prompt.md) in the repo (edit
 
 1. **What the employer can see today** and the consequences in practice (files, browsing, work vs private). Mostly for users and developers.
 2. **The security posture under zero trust** — what is reasonable, what goes further than necessary, and what is missing to catch a compromised machine or protect IP. This is the gaps-and-fixes part: it flags any protective component that is deployed but not active. Mostly for CISO and infrastructure.
-3. **How a user keeps personal data private** — practical advice for keeping genuinely personal data off the monitored surfaces in the first place, with a personal password manager (e.g. Bitwarden) and personal notes (e.g. Apple Notes) as examples, and the simplest option of keeping personal accounts on a personal device instead. This is about a person's own private data, not about hiding work activity, which remains the employer's to monitor. Mostly for users and developers.
+3. **Where personal accounts and data belong** — why a work machine is for work and personal accounts and data fit on a personal device. The separation serves both sides: personal credentials stay off the monitored surfaces, and the employer is not left holding them on a managed device. Where personal use is unavoidable, the one or two choices that change what lands on those surfaces, with a personal password manager (e.g. Bitwarden) and personal notes (e.g. Apple Notes) as examples. Mostly for users and developers.
 
 ## Caveats
 

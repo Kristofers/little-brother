@@ -71,16 +71,18 @@ that principle:
 
 Clearly flag if a protective component is deployed but not active.
 
-## Part 3 — How can a user keep personal data private?
+## Part 3 — Where do personal accounts and data belong?
 
-This part is about a person's own **private** data on a work machine — a personal
-password manager, personal notes — not about hiding work activity or evading security
-controls. Work data and work activity remain subject to the employer's monitoring; the
-goal here is only to keep genuinely personal data off the monitored surfaces in the first
-place. Given the monitoring posture above, give practical advice for that: with a password
-manager (e.g. Bitwarden) and private notes (e.g. Apple Notes) as examples, cover app vs
-browser extension, master password and lock timers, clipboard, local storage vs iCloud,
-and the simplest option of keeping personal accounts on a personal device instead.
+Given the monitoring posture in Parts 1 and 2, explain why a work machine is
+provisioned for work and why personal accounts and data fit naturally on a personal
+device. The separation serves both sides: it keeps personal credentials off the
+monitored surfaces, and it keeps the employer from holding those credentials on a
+managed device. With a personal password manager (e.g. Bitwarden) and private notes
+(e.g. Apple Notes) as concrete examples, note which of the monitored surfaces from
+Parts 1 and 2 each would touch if kept on this machine. Where some personal use is
+unavoidable, give the one or two choices that change what lands on those surfaces:
+prefer a dedicated app over a browser extension, and keep personal storage out of any
+work-synced location.
 
 ## Summary
 
