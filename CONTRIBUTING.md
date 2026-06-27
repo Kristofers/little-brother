@@ -12,7 +12,7 @@ behave differently from what the docs say. Keep every change explicit and inspec
 ## The golden rule: the script is read-only
 
 When the audit runs, it must only **read** the machine. The single exception is the
-**result directory** — the script may create and write files there, and nowhere else.
+**result directory**: the script may create and write files there, and nowhere else.
 
 Concretely, the script must never:
 
@@ -27,10 +27,10 @@ Concretely, the script must never:
 - make network calls or send data anywhere (`curl`, `wget`, `nc`, `ssh`, `scp`, ...)
 - control processes (`kill`, `pkill`, `killall`, `shutdown`, `reboot`)
 - run code that hides a write from the static scan (`eval`, `bash -c`/`sh -c`, `python3 -c`
-  or `perl -e` that opens files, or a heredoc feeding an interpreter) — the guard now scans
+  or `perl -e` that opens files, or a heredoc feeding an interpreter); the guard now scans
   these, including interpreter/shell heredoc bodies
 
-Writing to the result directory **is** allowed — that is the whole point. The result
+Writing to the result directory **is** allowed. That is the whole point. The result
 directory is named by these variables, and a write is tolerated only when the line
 references one of them:
 
@@ -39,7 +39,7 @@ AUDIT_ROOT  AUDIT_DIR  PROMPT_FILE
 MDE_FILE  MGMT_FILE  TCC_FILE  PROF_FILE  XML_FILE  GSA_FILE  GSA2_FILE  HARD_FILE  AGENT_FILE
 ```
 
-Most dual-use tools have a read-only mode — use it. For example `defaults read` (not
+Most dual-use tools have a read-only mode, so use it. For example `defaults read` (not
 `write`), `profiles show`/`status` (not `install`), `csrutil status` (not `disable`),
 `launchctl list` (not `load`), `dscl . -read`/`-list` (not `-create`), `sqlite3 ... SELECT`
 (not `DELETE`). When adding a new collector, prefer the narrowest read-only invocation.
@@ -61,7 +61,7 @@ script populated only a temporary result directory and touched nothing else).
 If the guard flags a line you believe is genuinely safe, the right fix is almost always
 to rewrite it so it targets the result directory or uses a read-only subcommand. As a
 last resort you can append `# guard:allow` to a reviewed line to suppress it, but expect
-reviewers to push back — the justification has to be convincing.
+reviewers to push back. The justification has to be convincing.
 
 ## Local testing
 
@@ -71,21 +71,21 @@ Run it on a real Mac and read the output:
 sudo bash whats_up_bigbro.sh
 ```
 
-Then confirm the redaction did its job before sharing anything — see the
+Then confirm the redaction did its job before sharing anything; see the
 "Verifying the redaction" section in the [README](README.md). New output should be
 scrubbed of identifiers just like the existing files.
 
 ## Conventions
 
-- **English only** — comments, output, the prompt, docs. (This overrides the maintainer's
+- **English only:** comments, output, the prompt, docs. (This overrides the maintainer's
   usual Swedish-context preference; keep it English.)
-- **Zero dependencies at runtime** — only bash and the macOS system tools that ship with
+- **Zero dependencies at runtime:** only bash and the macOS system tools that ship with
   the OS (plus `perl`/`python3`, which are already present). Do not add anything that has
   to be installed on the audited machine. `python3` is fine for dev/CI tooling only.
-- **Structure** — the script is linear, one `{ ... } > "$FILE" 2>&1` block per output
+- **Structure:** the script is linear, one `{ ... } > "$FILE" 2>&1` block per output
   file. Keep that shape. Terminal status goes to **stderr** (the `step` function) so it
   never lands in the result files.
-- **User-level paths** — use `$USER_HOME` (resolved via `dscl`), not `$HOME`, for anything
+- **User-level paths:** use `$USER_HOME` (resolved via `dscl`), not `$HOME`, for anything
   touching the logged-in user's files; under `sudo`, `$HOME` is root's home.
 - Update the version history in the script header for larger changes, and the file list in
   the README / `CLAUDE.md` if you add or rename an output file.
