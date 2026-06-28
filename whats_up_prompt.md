@@ -48,7 +48,31 @@ understand their day-to-day and privacy, a tech and IP lead, and a CISO and
 infrastructure manager assessing the security posture. Structure it so everyone gets
 something, and mark which part is most relevant to whom.
 
-## Part 1 — What can the employer see and do today?
+## Part 1 — Method
+
+Open the report with this part before anything else.
+
+- State what the report is based on: the attached audit files (`01_*` through
+  `09_*`), a read-only local snapshot of the machine. The tool that produced them
+  reads the machine and changes nothing.
+- Note that the files are normally redacted before they are shared. The redaction
+  masks personal and machine identifiers (names, usernames, host and computer names,
+  serial number, hardware UUID, email addresses, tokens, MAC addresses, GUIDs) and
+  any company or project terms passed to the tool. IP addresses are left unmasked on
+  purpose, because masking them would remove the tunnel and routing evidence.
+- Give a clear summary of whether the analysed material contains any data that, if
+  leaked, could point a reader to a specific person or company. Go through the files
+  by identifier category and, for each, say whether it appears in cleartext, appears
+  masked, or is absent:
+  - personal identifiers — names, usernames, email addresses
+  - machine identifiers — serial number, hardware UUID, MAC addresses
+  - organisation identifiers — company or project names, internal domains
+  - network identifiers — IP addresses
+- If any cleartext data that could identify a person or company remains, list it with
+  the file it appears in so the reader can judge whether the material is safe to share
+  further. If nothing identifying remains, say so plainly.
+
+## Part 2 — What can the employer see and do today?
 
 - Can files on the machine be read, and if so the content or just metadata?
 - Are the visited sites visible? At the domain level or page content too?
@@ -56,7 +80,7 @@ something, and mark which part is most relevant to whom.
   work account vs private use matter?
 - Describe the consequences for a user in practice.
 
-## Part 2 — Security posture under zero trust
+## Part 3 — Security posture under zero trust
 
 Premise: employees are assumed honest, but an attacker (threat actor) who hijacks the
 machine or the account is not. The protection should therefore target the attacker,
@@ -71,15 +95,15 @@ that principle:
 
 Clearly flag if a protective component is deployed but not active.
 
-## Part 3 — Where do personal accounts and data belong?
+## Part 4 — Where do personal accounts and data belong?
 
-Given the monitoring posture in Parts 1 and 2, explain why a work machine is
+Given the monitoring posture in Parts 2 and 3, explain why a work machine is
 provisioned for work and why personal accounts and data fit naturally on a personal
 device. The separation serves both sides: it keeps personal credentials off the
 monitored surfaces, and it keeps the employer from holding those credentials on a
 managed device. With a personal password manager (e.g. Bitwarden) and private notes
 (e.g. Apple Notes) as concrete examples, note which of the monitored surfaces from
-Parts 1 and 2 each would touch if kept on this machine. Where some personal use is
+Parts 2 and 3 each would touch if kept on this machine. Where some personal use is
 unavoidable, give the one or two choices that change what lands on those surfaces:
 prefer a dedicated app over a browser extension, and keep personal storage out of any
 work-synced location.
@@ -87,7 +111,9 @@ work-synced location.
 ## Summary
 
 End with a short, factual summary: what the machine actually monitors and does not
-monitor, and what it protects against and does not. Then list the most important
-actions split into what a user can do and what a security or infrastructure owner
-should follow up on. Do not rank the monitoring on a scale and do not express an
+monitor, and what it protects against and does not. Restate, in one or two sentences
+and mirroring the Method part, whether the analysed material contains any data that,
+if leaked, could point a reader to a specific person or company. Then list the most
+important actions split into what a user can do and what a security or infrastructure
+owner should follow up on. Do not rank the monitoring on a scale and do not express an
 opinion on whether the level is high or low.
