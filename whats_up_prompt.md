@@ -72,6 +72,20 @@ Open the report with this part before anything else.
   the file it appears in so the reader can judge whether the material is safe to share
   further. If nothing identifying remains, say so plainly.
 
+## Abbreviations
+
+Place this directly after the Method part, before Part 2.
+
+- Give a table of every abbreviation and acronym used anywhere in the report, with two
+  columns: the abbreviation and a short plain-language explanation (spell out what it
+  stands for, then one line on what it is). Sort the rows alphabetically.
+- The table must be complete: every abbreviation that appears anywhere else in the
+  report has a row here. Do not list abbreviations that the report does not use.
+- Keep the explanations non-specialist and self-contained, so the reader can read the
+  rest of the report without looking anything up elsewhere.
+- After this table, an abbreviation may be used on its own in the running text; it does
+  not need to be re-explained at each occurrence.
+
 ## Part 2 — What can the employer see and do today?
 
 - Can files on the machine be read, and if so the content or just metadata?
