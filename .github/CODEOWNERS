@@ -1,0 +1,6 @@
+# Code owners for little-brother.
+# Every change requires review/approval from the owner. Combined with the
+# "main read-only guard" ruleset (require code owner review), this makes the
+# owner the sole approver: external pull requests need the owner's sign-off,
+# and the owner's own pull requests merge via the admin bypass in the ruleset.
+* @Kristofers

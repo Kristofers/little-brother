@@ -1,0 +1,34 @@
+name: CODEOWNERS guard
+
+# Flags any change to .github/CODEOWNERS. That file controls who must approve
+# changes to the repo, so a change to it deserves a deliberate look. The job runs
+# only when CODEOWNERS is in the diff (paths filter), so it adds no noise elsewhere.
+# It fails the check to make the change visible; a repo admin can merge past it for an
+# intended change. To make it warn without failing, drop the final `exit 1`.
+
+on:
+  pull_request:
+    paths:
+      - '.github/CODEOWNERS'
+  push:
+    branches: [main]
+    paths:
+      - '.github/CODEOWNERS'
+
+permissions:
+  contents: read
+
+jobs:
+  codeowners-changed:
+    name: CODEOWNERS changed
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flag the change
+        run: |
+          echo "::warning title=CODEOWNERS changed::This change modifies .github/CODEOWNERS, which controls who must approve changes to this repo. Review it deliberately before merging."
+          {
+            echo "This change modifies .github/CODEOWNERS."
+            echo "CODEOWNERS governs required reviewers; altering it changes or weakens approval control."
+            echo "If the change is intended, a repo admin can merge past this check."
+          } >&2
+          exit 1

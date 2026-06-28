@@ -1,0 +1,79 @@
+name: read-only guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: static read-only guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Static read-only guard
+        run: python3 tools/readonly-guard.py whats_up_bigbro.sh
+      - name: Bash syntax
+        run: bash -n whats_up_bigbro.sh
+      - name: ShellCheck
+        continue-on-error: true
+        run: shellcheck -S warning whats_up_bigbro.sh
+
+  smoke-macos:
+    name: macOS smoke test (read-only against watched paths + result dir)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Bash syntax
+        run: bash -n whats_up_bigbro.sh
+      - name: Re-run the guard on macOS
+        run: python3 tools/readonly-guard.py whats_up_bigbro.sh
+      - name: Run the audit (as root) and verify it only wrote to the result dir
+        run: |
+          set -uo pipefail
+          AUDIT_ROOT="$RUNNER_TEMP/auditroot"
+          # Representative system targets a mutating regression would plausibly touch. The
+          # audit only reads these, so the snapshot below must be identical before and after.
+          # This is a partial proof (not a full-filesystem diff, which is too noisy on CI), but
+          # it turns "read-only" from an unchecked claim into a checked one for real targets.
+          #
+          # Regular files are watched by mtime — a stable signal that only moves on a real write.
+          # Directories are watched by their entry list, NOT their own mtime: macOS daemons
+          # (cfprefsd) rewrite plists under /Library/Preferences in place, which bumps the
+          # directory's mtime with no involvement from the audited script and produced a false
+          # "not read-only" failure. A read-only run never adds or removes an entry, so the
+          # sorted listing is the sound signal — an in-place OS rewrite no longer trips the
+          # guard, while the script creating or deleting a file still would.
+          watch_files=(/etc/hosts /etc/sudoers /Library/Keychains/System.keychain)
+          watch_dirs=(/Library/Preferences /etc/resolver "/Library/Managed Preferences")
+          snap() {
+            for p in "${watch_files[@]}"; do
+              [ -e "$p" ] && printf 'file %s %s\n' "$(stat -f '%m' "$p")" "$p"
+            done
+            for d in "${watch_dirs[@]}"; do
+              [ -d "$d" ] && find "$d" -maxdepth 1 2>/dev/null | sort | sed 's/^/entry /'
+            done
+          }
+          snap >"$RUNNER_TEMP/watch.before"
+          # Root is required; pass AUDIT_ROOT and silence the no-terms warning explicitly.
+          sudo AUDIT_ROOT="$AUDIT_ROOT" ALLOW_NO_TERMS=1 bash whats_up_bigbro.sh
+          snap >"$RUNNER_TEMP/watch.after"
+          if ! diff -u "$RUNNER_TEMP/watch.before" "$RUNNER_TEMP/watch.after"; then
+            echo "FAIL: a watched system path changed — the run was not read-only"; exit 1
+          fi
+          test -d "$AUDIT_ROOT" || { echo "FAIL: no audit root created"; exit 1; }
+          d="$(find "$AUDIT_ROOT" -maxdepth 1 -type d -name 'audit_*' | head -1)"
+          test -n "$d" || { echo "FAIL: no audit_* subdir"; exit 1; }
+          for f in 01_mde_health 02_managed_prefs 03_full_disk_access \
+                   04_profiles_summary 06_gsa_tunnel 07_gsa_config_tls \
+                   08_system_hardening 09_agents_network; do
+            ls "$d/${f}_"*.txt >/dev/null 2>&1 || { echo "FAIL: missing $f"; exit 1; }
+          done
+          ls "$d"/05_profiles_full_*.xml >/dev/null 2>&1 || { echo "FAIL: missing profile XML"; exit 1; }
+          test -f "$d/whats_up_prompt.md" || { echo "FAIL: prompt not copied"; exit 1; }
+          test ! -e "$HOME/bigbro_audit" || { echo "FAIL: wrote to the default HOME location"; exit 1; }
+          echo "smoke OK: populated only $AUDIT_ROOT and left watched system files untouched"
